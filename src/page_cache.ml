@@ -68,18 +68,18 @@ let with_page t ?(new_page = false) ?(force_flush = false) ~pageno (f : Page.t @
       let slot =
         (match get_victim_or_empty t with
           | `Empty i ->
-              let pg = Page.alloc_page t.fd pageno in
-              if not new_page then Page.load pg pageno;
+              let pg = Page.create t.fd pageno in
+              if not new_page then Page.load pg ~pageno;
               let slot = {pg;seqno = t.latest_seqno; in_use = true} in
               t.slots.(i) <- Some slot;
               slot
           | `Victim victim_slot ->
               Page.flush victim_slot.pg;
               (if new_page then
-                let pg = Page.alloc_page t.fd pageno in 
-                victim_slot.pg <- pg;
+                  (Page.clear_bytes victim_slot.pg;
+                  Page.set_pageno victim_slot.pg pageno)
               else
-                Page.load victim_slot.pg pageno);
+                Page.load victim_slot.pg ~pageno);
               victim_slot.seqno <- t.latest_seqno;
               victim_slot
           )

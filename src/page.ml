@@ -39,6 +39,11 @@ let load t ~pageno =
   t.pageno <- pageno;
   t.dirty <- false
 
+let clear_bytes t =
+  Bytes.fill t.raw ~pos:0 ~len:4096 (Char.of_int_exn 0)
+
+let set_pageno t pageno =
+  t.pageno <- pageno
 
 let flush (pg @ local) =
   if pg.dirty then begin
@@ -48,7 +53,7 @@ let flush (pg @ local) =
     pg.dirty <- false
   end
 
-let alloc_page fd pageno =
+let create fd pageno =
   let raw = Bytes.make 4096 (Char.of_int_exn 0) in
   let pg = {fd;pageno;raw; dirty = true} in
   pg
