@@ -21,17 +21,22 @@ type t = {
   raw : Bytes.t
 }
 
+
 let page_pos pageno = pageno * page_size
 
+let seek_to_page fd pageno =
+  ignore (lseek fd (Int64.of_int (page_pos pageno)) ~mode:SEEK_SET)
 
 let load fd pageno =
   let raw = Bytes.create 4096 in
-  let num_read = read fd ~pos:(page_pos pageno) ~len:page_size ~buf:raw in
+  seek_to_page fd pageno;
+  let num_read = read fd ~buf:raw in
   assert (Int.equal num_read page_size);
   { fd ; pageno; raw }
 
 let save pg =
-  let num_written = write pg.fd ~pos:(page_pos pg.pageno) ~len:page_size ~buf:pg.raw in
+  seek_to_page pg.fd pg.pageno;
+  let num_written = write pg.fd ~buf:pg.raw in
   assert (Int.equal num_written page_size)
 
 let alloc_page fd pageno =
@@ -43,6 +48,9 @@ let alloc_page fd pageno =
 
 let num_entries pg = 
   Int64.to_int_trunc (Bytes.unsafe_get_int64 pg.raw 0)
+
+let set_num_entries pg n = 
+  Bytes.unsafe_set_int64 pg.raw 0 (Int64.of_int n)
 
 let incr_num_entries pg = 
   let num_entries = Int64.to_int_trunc (Bytes.unsafe_get_int64 pg.raw 0) in

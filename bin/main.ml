@@ -7,8 +7,7 @@ let () =
   Db.put db ~k:3 ~v:99;
   Printf.printf "get 1: %d\n" (Option.value (Db.get db 1) ~default:(-1));
   Printf.printf "get 2: %d\n" (Option.value (Db.get db 2) ~default:(-1));
-  Printf.printf "scan: %s\n" 
-    (String.concat ", " (List.map (fun (k,v) -> Printf.sprintf "%d->%d" k v) (Db.scan db)));
+  Printf.printf "get 3: %d\n" (Option.value (Db.get db 3) ~default:(-1));
+  Printf.printf "put 2: 100\n";
   Db.put db ~k:2 ~v:100 ;
-  Printf.printf "final: %s\n"
-    (String.concat ", " (List.map (fun (k,v) -> Printf.sprintf "%d->%d" k v) (Db.scan db)))
+  Printf.printf "get 2: %d\n" (Option.value (Db.get db 2) ~default:(-1));
