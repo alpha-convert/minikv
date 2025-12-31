@@ -18,9 +18,11 @@ repeated, N times.
 type t = {
   fd : File_descr.t;
   pageno : int;
-  raw : Bytes.t
+  raw : Bytes.t;
+  mutable dirty : bool
 }
 
+let pageno pg = pg.pageno
 
 let page_pos pageno = pageno * page_size
 
@@ -32,29 +34,32 @@ let load fd pageno =
   seek_to_page fd pageno;
   let num_read = read fd ~buf:raw in
   assert (Int.equal num_read page_size);
-  { fd ; pageno; raw }
+  { fd ; pageno; raw; dirty = false }
 
-let save pg =
-  seek_to_page pg.fd pg.pageno;
-  let num_written = write pg.fd ~buf:pg.raw in
-  assert (Int.equal num_written page_size)
+let flush (pg @ local) =
+  if pg.dirty then (
+    seek_to_page pg.fd pg.pageno;
+    let num_written = write pg.fd ~buf:(Obj.magic Obj.magic pg.raw) in
+    assert (Int.equal num_written page_size);
+    pg.dirty <- false
+  )
 
 let alloc_page fd pageno =
-  (* just write zero bytes into this region. *)
   let raw = Bytes.make 4096 (Char.of_int_exn 0) in
-  let pg = {fd;pageno;raw} in
-  save pg;
+  let pg = {fd;pageno;raw; dirty = false} in
   pg
 
 let num_entries pg = 
   Int64.to_int_trunc (Bytes.unsafe_get_int64 pg.raw 0)
 
 let set_num_entries pg n = 
-  Bytes.unsafe_set_int64 pg.raw 0 (Int64.of_int n)
+  Bytes.unsafe_set_int64 pg.raw 0 (Int64.of_int n);
+  pg.dirty <- true
 
 let incr_num_entries pg = 
   let num_entries = Int64.to_int_trunc (Bytes.unsafe_get_int64 pg.raw 0) in
-  Bytes.unsafe_set_int64 pg.raw 0 (Int64.of_int (num_entries + 1))
+  Bytes.unsafe_set_int64 pg.raw 0 (Int64.of_int (num_entries + 1));
+  pg.dirty <- true
 
 let get_entry pg i =
   assert Int.(i < 512);
@@ -65,4 +70,5 @@ let get_entry pg i =
 let set_entry pg i ~k ~v  =
   assert Int.(i < 512);
   Bytes.unsafe_set_int64 pg.raw (16*i + 8) (Int64.of_int k);
-  Bytes.unsafe_set_int64 pg.raw (16*i + 16) (Int64.of_int v)
+  Bytes.unsafe_set_int64 pg.raw (16*i + 16) (Int64.of_int v);
+  pg.dirty <- true
