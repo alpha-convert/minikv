@@ -3,7 +3,12 @@ open! Core_unix
 
 type slot = { mutable pg : Page.t; mutable seqno : int }
 
-let compare_seqno s s' = Int.compare s.seqno s'.seqno
+let compare_seqno s s' =
+  (* Prefer clean pages over dirty pages for eviction *)
+  match (Page.is_dirty s.pg, Page.is_dirty s'.pg) with
+  | (false, true) -> -1
+  | (true, false) -> 1
+  | _ -> Int.compare s.seqno s'.seqno
 
 type t =
   {
@@ -58,7 +63,7 @@ let with_page t ?(alloc = false) ?(force_flush = false) ~pageno (f : Page.t @ lo
           Page.flush victim_slot.pg;
           victim_slot.pg <- pg;
           victim_slot.seqno <- t.latest_seqno
-      );
+        );
       t.latest_seqno <- t.latest_seqno + 1;
       let res = f pg in
       if force_flush then Page.flush pg;

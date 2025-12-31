@@ -7,6 +7,7 @@ val load : File_descr.t -> int -> t
 val flush : t @ local -> unit
 
 val pageno : t @ local -> int
+val is_dirty : t @ local -> bool
 
 val alloc_page : File_descr.t -> int -> t
 

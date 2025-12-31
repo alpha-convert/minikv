@@ -24,6 +24,8 @@ type t = {
 
 let pageno pg = pg.pageno
 
+let is_dirty pg = pg.dirty
+
 let page_pos pageno = pageno * page_size
 
 let seek_to_page fd pageno =
