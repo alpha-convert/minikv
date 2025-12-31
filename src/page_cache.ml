@@ -56,8 +56,9 @@ let with_page t ?(alloc = false) ?(force_flush = false) ~pageno (f : Page.t @ lo
       | `Empty i -> t.slots.(i) <- Some {pg;seqno = t.latest_seqno}
       | `Victim victim_slot ->
           Page.flush victim_slot.pg;
-          victim_slot.pg <- pg; victim_slot.seqno <- t.latest_seqno
-        );
+          victim_slot.pg <- pg;
+          victim_slot.seqno <- t.latest_seqno
+      );
       t.latest_seqno <- t.latest_seqno + 1;
       let res = f pg in
       if force_flush then Page.flush pg;
