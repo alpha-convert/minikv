@@ -1,0 +1,7 @@
+(executable
+ (name main)
+ (link_flags -linkall)
+ (libraries base core core_bench minikv)
+ (preprocess
+  (pps ppx_jane))
+ )
