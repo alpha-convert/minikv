@@ -21,10 +21,9 @@ let flush t =
   Page_cache.flush_all t.page_cache;
   save_pagetbl_to_page0 t
 
-
 let alloc_new_page t f = 
   t.last_pageno <- t.last_pageno + 1;
-  Page_cache.with_page ~alloc:true ~pageno:t.last_pageno t.page_cache f
+  Page_cache.with_page t.page_cache ~new_page:true ~pageno:t.last_pageno f
 
 let seek k (pg @ local) =
   let rec loop i =

@@ -3,7 +3,8 @@ open! Core_unix
 
 type t
 
-val load : File_descr.t -> int -> t
+val load : t -> pageno:int -> unit
+
 val flush : t @ local -> unit
 
 val pageno : t @ local -> int

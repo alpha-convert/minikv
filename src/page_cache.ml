@@ -1,7 +1,11 @@
 open! Core
 open! Core_unix
 
-type slot = { mutable pg : Page.t; mutable seqno : int }
+type slot = {
+  mutable in_use : bool;
+  mutable pg : Page.t;
+  mutable seqno : int
+}
 
 let compare_seqno s s' =
   (* Prefer clean pages over dirty pages for eviction *)
@@ -34,7 +38,11 @@ let get_victim_or_empty t =
   in
   match first_empty with
   | Some i -> `Empty i
-  | None -> `Victim (Option.value_exn (Array.min_elt (Array.filter_opt t.slots) ~compare:compare_seqno))
+  | None ->
+      let available_slots = Array.filter_opt t.slots |> Array.filter ~f:(fun slot -> not slot.in_use) in
+      match Array.min_elt available_slots ~compare:compare_seqno with
+      | Some victim -> `Victim victim
+      | None -> failwith "No available slots."
 
 
 let find_slot_of t pageno =
@@ -45,25 +53,40 @@ let find_slot_of t pageno =
       | Some ({pg;_} as slot) -> if Int.equal (Page.pageno pg) pageno then Some slot else None
     )
 
-let with_page t ?(alloc = false) ?(force_flush = false) ~pageno (f : Page.t @ local -> 'a) =
+let with_page t ?(new_page = false) ?(force_flush = false) ~pageno (f : Page.t @ local -> 'a) =
   let slot_opt = find_slot_of t pageno in
   match slot_opt with
   | Some slot ->
-      let res = f slot.pg in
-      if force_flush then Page.flush slot.pg;
       slot.seqno <- t.latest_seqno;
       t.latest_seqno <- t.latest_seqno + 1;
+      slot.in_use <- true;
+      let res = f slot.pg in
+      slot.in_use <- false;
+      if force_flush then Page.flush slot.pg;
       res
   | None ->
-      let pg = if alloc then Page.alloc_page t.fd pageno else Page.load t.fd pageno in
-      (match get_victim_or_empty t with
-      | `Empty i -> t.slots.(i) <- Some {pg;seqno = t.latest_seqno}
-      | `Victim victim_slot ->
-          Page.flush victim_slot.pg;
-          victim_slot.pg <- pg;
-          victim_slot.seqno <- t.latest_seqno
-        );
+      let slot =
+        (match get_victim_or_empty t with
+          | `Empty i ->
+              let pg = Page.alloc_page t.fd pageno in
+              if not new_page then Page.load pg pageno;
+              let slot = {pg;seqno = t.latest_seqno; in_use = true} in
+              t.slots.(i) <- Some slot;
+              slot
+          | `Victim victim_slot ->
+              Page.flush victim_slot.pg;
+              (if new_page then
+                let pg = Page.alloc_page t.fd pageno in 
+                victim_slot.pg <- pg;
+              else
+                Page.load victim_slot.pg pageno);
+              victim_slot.seqno <- t.latest_seqno;
+              victim_slot
+          )
+        in
       t.latest_seqno <- t.latest_seqno + 1;
-      let res = f pg in
-      if force_flush then Page.flush pg;
+      slot.in_use <- true;
+      let res = f slot.pg in
+      slot.in_use <- false;
+      if force_flush then Page.flush slot.pg;
       res

@@ -17,7 +17,7 @@ repeated, N times.
 
 type t = {
   fd : File_descr.t;
-  pageno : int;
+  mutable pageno : int;
   raw : Bytes.t;
   mutable dirty : bool
 }
@@ -31,24 +31,26 @@ let page_pos pageno = pageno * page_size
 let seek_to_page fd pageno =
   ignore (lseek fd (Int64.of_int (page_pos pageno)) ~mode:SEEK_SET)
 
-let load fd pageno =
-  let raw = Bytes.create 4096 in
-  seek_to_page fd pageno;
-  let num_read = read fd ~buf:raw in
+let load t ~pageno =
+  let buf = t.raw in
+  seek_to_page t.fd pageno;
+  let num_read = read t.fd ~buf in
   assert (Int.equal num_read page_size);
-  { fd ; pageno; raw; dirty = false }
+  t.pageno <- pageno;
+  t.dirty <- false
+
 
 let flush (pg @ local) =
-  if pg.dirty then (
+  if pg.dirty then begin
     seek_to_page pg.fd pg.pageno;
     let num_written = write pg.fd ~buf:(Obj.magic Obj.magic pg.raw) in
     assert (Int.equal num_written page_size);
     pg.dirty <- false
-  )
+  end
 
 let alloc_page fd pageno =
   let raw = Bytes.make 4096 (Char.of_int_exn 0) in
-  let pg = {fd;pageno;raw; dirty = false} in
+  let pg = {fd;pageno;raw; dirty = true} in
   pg
 
 let num_entries pg = 
