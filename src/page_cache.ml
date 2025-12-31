@@ -45,7 +45,6 @@ let find_slot_of t pageno =
       | Some ({pg;_} as slot) -> if Int.equal (Page.pageno pg) pageno then Some slot else None
     )
 
-
 let with_page t ?(alloc = false) ?(force_flush = false) ~pageno (f : Page.t @ local -> 'a) =
   let slot_opt = find_slot_of t pageno in
   match slot_opt with
