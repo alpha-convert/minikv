@@ -18,7 +18,7 @@ repeated, N times.
 type t = {
   fd : File_descr.t;
   mutable pageno : int;
-  raw : Bytes.t;
+  raw : Bigstring_unix.t;
   mutable dirty : bool
 }
 
@@ -34,13 +34,13 @@ let seek_to_page fd pageno =
 let load t ~pageno =
   let buf = t.raw in
   seek_to_page t.fd pageno;
-  let num_read = read t.fd ~buf in
+  let num_read = Bigstring_unix.read t.fd buf in
   assert (Int.equal num_read page_size);
   t.pageno <- pageno;
   t.dirty <- false
 
 let clear_bytes t =
-  Bytes.fill t.raw ~pos:0 ~len:4096 (Char.of_int_exn 0)
+  Bigstring_unix.memset t.raw ~pos:0 ~len:page_size (Char.of_int_exn 0)
 
 let set_pageno t pageno =
   t.pageno <- pageno
@@ -54,30 +54,31 @@ let flush (pg @ local) =
   end
 
 let create fd pageno =
-  let raw = Bytes.make 4096 (Char.of_int_exn 0) in
+  let raw = Bigstring_unix.create 4096 in
+  Bigstring_unix.memset raw ~pos:0 ~len:page_size (Char.of_int_exn 0);
   let pg = {fd;pageno;raw; dirty = true} in
   pg
 
 let num_entries pg = 
-  Int64.to_int_trunc (Bytes.unsafe_get_int64 pg.raw 0)
+  Bigstring_unix.unsafe_get_int64_le_exn pg.raw ~pos:0
 
 let set_num_entries pg n = 
-  Bytes.unsafe_set_int64 pg.raw 0 (Int64.of_int n);
+  Bigstring_unix.unsafe_set_int64_le pg.raw ~pos:0 n;
   pg.dirty <- true
 
 let incr_num_entries pg = 
-  let num_entries = Int64.to_int_trunc (Bytes.unsafe_get_int64 pg.raw 0) in
-  Bytes.unsafe_set_int64 pg.raw 0 (Int64.of_int (num_entries + 1));
+  let num_entries = Bigstring_unix.unsafe_get_int64_le_exn pg.raw ~pos:0 in
+  Bigstring_unix.unsafe_set_int64_le pg.raw ~pos:0 (num_entries + 1);
   pg.dirty <- true
 
 let get_entry pg i =
   assert Int.(i < 512);
-  let k = Int64.to_int_trunc (Bytes.unsafe_get_int64 pg.raw (16*i + 8)) in
-  let v = Int64.to_int_trunc (Bytes.unsafe_get_int64 pg.raw (16*i + 16)) in
+  let k = Bigstring_unix.unsafe_get_int64_le_exn pg.raw ~pos:(16*i + 8) in
+  let v = Bigstring_unix.unsafe_get_int64_le_exn pg.raw ~pos:(16*i + 16) in
   (~k,~v)
 
 let set_entry pg i ~k ~v  =
   assert Int.(i < 512);
-  Bytes.unsafe_set_int64 pg.raw (16*i + 8) (Int64.of_int k);
-  Bytes.unsafe_set_int64 pg.raw (16*i + 16) (Int64.of_int v);
+  Bigstring_unix.unsafe_set_int64_le pg.raw ~pos:(16*i + 8) k;
+  Bigstring_unix.unsafe_set_int64_le pg.raw ~pos:(16*i + 16) v;
   pg.dirty <- true

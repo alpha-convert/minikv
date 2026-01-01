@@ -1,6 +1,6 @@
 (library
  (name minikv)
- (libraries core core_unix unboxed)
+ (libraries core core_unix core_unix.bigstring_unix unboxed)
  (inline_tests)
  (preprocess
   (pps ppx_jane)))
