@@ -15,7 +15,6 @@ type t = {
 
 let underlying t = t.dirty <- true; t.raw
 let underlying_read_only t = t.raw
-
 let pageno pg = pg.pageno
 let is_dirty pg = pg.dirty
 
@@ -33,7 +32,7 @@ let load t ~pageno =
   t.dirty <- false
 
 let clear_bytes t =
-  Bigstring_unix.memset t.raw ~pos:0 ~len:page_size (Char.of_int_exn 0)
+  Bigstring.memset t.raw ~pos:0 ~len:page_size (Char.of_int_exn 0)
 
 let set_pageno t pageno =
   t.pageno <- pageno
@@ -47,8 +46,7 @@ let flush (pg @ local) =
   end
 
 let create fd pageno =
-  let raw = Bigstring_unix.create 4096 in
-  Bigstring_unix.memset raw ~pos:0 ~len:page_size (Char.of_int_exn 0);
-  let pg = {fd;pageno;raw; dirty = true} in
-  pg
+  let raw = Bigstring.create 4096 in
+  Bigstring.memset raw ~pos:0 ~len:page_size (Char.of_int_exn 0);
+  {fd;pageno;raw; dirty = false}
 
