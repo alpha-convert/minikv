@@ -1,15 +1,12 @@
 open! Core
 open! Core_unix
 
-let page_size = 4096
-
-
-
+let page_size = 16384
 
 type t = {
-  fd : File_descr.t;
-  mutable pageno : int;
   raw : Bigstring.t;
+  fd : File_descr.t;
+  mutable pageno : Pageno.t;
   mutable dirty : bool
 }
 
@@ -18,12 +15,12 @@ let underlying_read_only t = t.raw
 let pageno pg = pg.pageno
 let is_dirty pg = pg.dirty
 
-let page_pos pageno = pageno * page_size
+let page_pos pageno = Pageno.to_int pageno * page_size
 
 let seek_to_page fd pageno =
   ignore (lseek fd (Int64.of_int (page_pos pageno)) ~mode:SEEK_SET)
 
-let load t ~pageno =
+let load t pageno =
   let buf = t.raw in
   seek_to_page t.fd pageno;
   let num_read = Bigstring_unix.read t.fd buf in
@@ -46,7 +43,7 @@ let flush (pg @ local) =
   end
 
 let create fd pageno =
-  let raw = Bigstring.create 4096 in
+  let raw = Bigstring.create page_size in
   Bigstring.memset raw ~pos:0 ~len:page_size (Char.of_int_exn 0);
   {fd;pageno;raw; dirty = false}
 

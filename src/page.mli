@@ -3,24 +3,19 @@ open! Core_unix
 
 type t
 
-val load : t -> pageno:int -> unit
+val page_size : int
 
-val set_pageno : t -> int -> unit
+val load : t -> Pageno.t -> unit
+
+val set_pageno : t -> Pageno.t -> unit
 val clear_bytes : t -> unit
 
 val flush : t @ local -> unit
 
-val pageno : t @ local -> int
+val pageno : t @ local -> Pageno.t
 val is_dirty : t @ local -> bool
 
-val create : File_descr.t -> int -> t
+val create : File_descr.t -> Pageno.t -> t
 
 val underlying_read_only : t @ local -> Bigstring_unix.t @ local read
 val underlying : t @ local -> Bigstring_unix.t @ local
-(* 
-val max_num_entries : int
-val num_entries : t @ local -> int
-val set_num_entries : t @ local -> int -> unit
-val incr_num_entries : t @ local -> unit
-val get_entry : t @ local -> int -> (k:int*v:int)
-val set_entry : t @ local -> int -> k:int -> v:int -> unit *)
