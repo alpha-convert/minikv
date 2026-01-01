@@ -21,6 +21,11 @@ type t =
     mutable latest_seqno : int
   }
 
+let next_seqno t =
+  let a = t.latest_seqno in
+  t.latest_seqno <- a + 1;
+  a
+
 let flush_all t =
   Array.iter t.slots ~f:(function
   | None -> ()
@@ -57,8 +62,7 @@ let with_page t ?(new_page = false) ?(force_flush = false) ~pageno (f : Page.t @
   let slot_opt = find_slot_of t pageno in
   match slot_opt with
   | Some slot ->
-      slot.seqno <- t.latest_seqno;
-      t.latest_seqno <- t.latest_seqno + 1;
+      slot.seqno <- next_seqno t;
       slot.in_use <- true;
       let res = f slot.pg in
       slot.in_use <- false;
@@ -70,7 +74,7 @@ let with_page t ?(new_page = false) ?(force_flush = false) ~pageno (f : Page.t @
           | `Empty i ->
               let pg = Page.create t.fd pageno in
               if not new_page then Page.load pg ~pageno;
-              let slot = {pg;seqno = t.latest_seqno; in_use = true} in
+              let slot = {pg;seqno = next_seqno t; in_use = true} in
               t.slots.(i) <- Some slot;
               slot
           | `Victim victim_slot ->
@@ -80,11 +84,10 @@ let with_page t ?(new_page = false) ?(force_flush = false) ~pageno (f : Page.t @
                   Page.set_pageno victim_slot.pg pageno)
               else
                 Page.load victim_slot.pg ~pageno);
-              victim_slot.seqno <- t.latest_seqno;
+              victim_slot.seqno <- next_seqno t;
               victim_slot
           )
         in
-      t.latest_seqno <- t.latest_seqno + 1;
       slot.in_use <- true;
       let res = f slot.pg in
       slot.in_use <- false;
