@@ -5,8 +5,13 @@ type t = {
   fd : File_descr.t;
   page_tbl : (int,Pageno.t) Hashtbl.t;
   page_cache : Page_cache.t;
-  mutable last_pageno : Pageno.t;
+  page_allocator : Page_allocator.t
 }
+
+(*
+TODO: page 0 has metadata: the number of pages, the pageno which is the root of the b+tree. etc
+TODO: data pages, storing a string of size less than a page
+*)
 
 (**
 The format of a page is:
@@ -54,10 +59,6 @@ let flush t =
   Page_cache.flush_all t.page_cache;
   save_pagetbl_to_page0 t
 
-let alloc_new_page t f =
-  t.last_pageno <- Pageno.succ t.last_pageno;
-  Page_cache.with_page t.page_cache ~new_page:true t.last_pageno f
-
 let seek k (buf @ read) =
   let rec loop i =
     if i >= num_entries buf then None
@@ -69,7 +70,7 @@ let seek k (buf @ read) =
   (loop 0 [@nontail])
 
 let prefill fd = 
-  let two_empty_pages = Bytes.make 8192 (Char.of_int_exn 0) in
+  let two_empty_pages = Bytes.make (2 * Page.page_size) (Char.of_int_exn 0) in
   ignore (Core_unix.lseek fd 0L ~mode:SEEK_SET);
   ignore (Core_unix.write fd ~buf:two_empty_pages)
 
@@ -87,12 +88,12 @@ let load str =
       let (~k:key,~v:pageno) = get_entry buf0 i in
       Hashtbl.set page_tbl ~key ~data:(Pageno.of_int pageno)
     done);
-    let last_pageno = Hashtbl.fold page_tbl ~init:(Pageno.succ Pageno.zero) ~f:(fun ~key:_ ~data:pageno acc -> Pageno.max pageno acc) in
+    let page_allocator = Page_allocator.create fd in
     {
       fd;
       page_tbl;
       page_cache;
-      last_pageno = last_pageno
+      page_allocator
     }
   )
 
@@ -110,16 +111,17 @@ let get t k =
 let put t ~k ~v =
   match Hashtbl.find t.page_tbl k  with
   | None ->
-    Page_cache.with_page t.page_cache t.last_pageno (
+    Page_cache.with_page t.page_cache (Page_allocator.last_pageno t.page_allocator) (
       fun last_pg ->
         let buf = Page.underlying last_pg in
         if num_entries buf < max_num_entries then
           let i = num_entries buf in
-          Hashtbl.set t.page_tbl ~key:k ~data:t.last_pageno;
+          Hashtbl.set t.page_tbl ~key:k ~data:(Page_allocator.last_pageno t.page_allocator);
           set_entry buf i ~k ~v;
           incr_num_entries buf; ()
         else
-          alloc_new_page t (fun pg ->
+          let pageno = Page_allocator.allocate_page t.page_allocator in
+          Page_cache.with_page t.page_cache pageno (fun pg ->
             let buf = Page.underlying pg in
             Hashtbl.set t.page_tbl ~key:k ~data:(Page.pageno pg);
             set_entry buf 0 ~k ~v;

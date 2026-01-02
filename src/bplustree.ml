@@ -1,6 +1,25 @@
 open! Core
 open! Core_unix
 
+module Header = struct
+  type t =
+    | Internal
+    | Leaf
+
+  let to_int (h : t) : int = Obj.magic h
+  let of_int (i : int) : t = Obj.magic i
+
+  let classify (page @ local) @ local = exclave_
+    let buf = Page.underlying_read_only page in
+    let header_byte = OffHeapBuffer.unsafe_get_int8 buf ~pos:0 in
+    match of_int header_byte with
+    | Internal -> Either.First page
+    | Leaf -> Either.Second page
+
+  let as_leaf (page @ local) @ local = exclave_ page
+end
+
+
 module Internal = struct
   (* Internal node layout:
      - header: 8-bit node type
@@ -21,7 +40,7 @@ module Internal = struct
 
   let set_num_keys t n =
     let buf = Page.underlying t in
-    (OffHeapBuffer.unsafe_set_int16_le buf ~pos:1 n [@nontail])
+    (OffHeapBuffer.unsafe_set_int16_le_exn buf ~pos:1 n [@nontail])
 
   let is_full t =
     num_keys t >= max_keys
@@ -63,6 +82,11 @@ module Internal = struct
           search (mid + 1) hi
     in
     (search 0 n [@nontail])
+
+  let init page =
+    let buf = Page.underlying page in
+    (OffHeapBuffer.unsafe_set_int8_le_exn buf ~pos:0 (Header.to_int Header.Internal) [@nontail]);
+    (OffHeapBuffer.unsafe_set_int16_le_exn buf ~pos:1 0 [@nontail])   (* num_keys = 0 *)
 end
 
 module Leaf = struct
@@ -84,7 +108,7 @@ module Leaf = struct
 
   let set_num_keys t n =
     let buf = Page.underlying t in
-    (OffHeapBuffer.unsafe_set_int16_le buf ~pos:1 n [@nontail])
+    (OffHeapBuffer.unsafe_set_int16_le_exn buf ~pos:1 n [@nontail])
 
   let is_full t =
     num_keys t >= max_keys
@@ -121,24 +145,11 @@ module Leaf = struct
     let n = num_keys t in
     set_entry t n ~key ~pointer:value;
     set_num_keys t (n + 1)
-end
 
-module Header = struct
-  type t =
-    | Internal
-    | Leaf
-
-  let to_int (h : t) : int = Obj.magic h
-  let of_int (i : int) : t = Obj.magic i
-
-  let classify (page @ local) : (Internal.t,Leaf.t) Either.t @ local = exclave_
-    let buf = Page.underlying_read_only page in
-    let header_byte = OffHeapBuffer.unsafe_get_int8 buf ~pos:0 in
-    match of_int header_byte with
-    | Internal -> Either.First page
-    | Leaf -> Either.Second page
-
-  let as_leaf (page @ local) : Leaf.t @ local = exclave_ page
+  let init page =
+    let buf = Page.underlying page in
+    (OffHeapBuffer.unsafe_set_int16_le_exn buf ~pos:0 (Header.to_int Header.Leaf) [@nontail]);
+    (OffHeapBuffer.unsafe_set_int16_le_exn buf ~pos:1 0 [@nontail])   (* num_keys = 0 *)
 end
 
 
@@ -170,20 +181,8 @@ let lookup root cache key =
     Leaf.lookup_key leaf key [@nontail]
   )
 
-(* Initialize a page as a leaf node *)
-let init_leaf page =
-  let buf = Page.underlying page in
-  (OffHeapBuffer.unsafe_set_int16_le buf ~pos:0 (Header.to_int Header.Leaf) [@nontail]);
-  (OffHeapBuffer.unsafe_set_int16_le buf ~pos:1 0 [@nontail])   (* num_keys = 0 *)
-
-(* Initialize a page as an internal node *)
-let init_internal page =
-  let buf = Page.underlying page in
-  (OffHeapBuffer.unsafe_set_int16_le buf ~pos:0 (Header.to_int Header.Internal) [@nontail]);
-  (OffHeapBuffer.unsafe_set_int16_le buf ~pos:1 0 [@nontail])   (* num_keys = 0 *)
-
 (* Simple insert - for now, just insert into leaf without handling splits *)
-let insert root cache ~key ~value =
+let insert root cache allocator ~key ~value =
   let leaf_pageno = lookup_leaf_page root cache key in
   Page_cache.with_page cache leaf_pageno (fun page ->
     let leaf = Header.as_leaf page in
