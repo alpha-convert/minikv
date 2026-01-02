@@ -8,8 +8,6 @@ type t = {
   mutable last_pageno : Pageno.t;
 }
 
-let unsafe_get_int64_le_exn (buf : Bigstring.t @ read) ~pos = Bigstring.unsafe_get_int64_le_exn (Obj.magic Obj.magic buf) ~pos
-
 (**
 The format of a page is:
 N, a number of entries
@@ -21,26 +19,26 @@ repeated, N times.
 
 let max_num_entries = Page.page_size / 16 - 1
 
-let num_entries (buf @ read) = 
-  unsafe_get_int64_le_exn buf ~pos:0
+let num_entries (buf @ read) =
+  OffHeapBuffer.unsafe_get_int64_le_exn buf ~pos:0
 
-let set_num_entries buf n = 
-  Bigstring.unsafe_set_int64_le buf ~pos:0 n
+let set_num_entries buf n =
+  OffHeapBuffer.unsafe_set_int64_le_exn buf ~pos:0 n
 
-let incr_num_entries buf = 
-  let num_entries = Bigstring.unsafe_get_int64_le_exn buf ~pos:0 in
-  Bigstring.unsafe_set_int64_le buf~pos:0 (num_entries + 1)
+let incr_num_entries buf =
+  let num_entries = OffHeapBuffer.unsafe_get_int64_le_exn buf ~pos:0 in
+  OffHeapBuffer.unsafe_set_int64_le_exn buf ~pos:0 (num_entries + 1)
 
 let get_entry (buf @ read) i =
   assert Int.(i < 512);
-  let k = unsafe_get_int64_le_exn buf ~pos:(16*i + 8) in
-  let v = unsafe_get_int64_le_exn buf ~pos:(16*i + 16) in
+  let k = OffHeapBuffer.unsafe_get_int64_le_exn buf ~pos:(16*i + 8) in
+  let v = OffHeapBuffer.unsafe_get_int64_le_exn buf ~pos:(16*i + 16) in
   (~k,~v)
 
 let set_entry buf i ~k ~v  =
   assert Int.(i < 512);
-  Bigstring.unsafe_set_int64_le buf ~pos:(16*i + 8) k;
-  Bigstring.unsafe_set_int64_le buf  ~pos:(16*i + 16) v
+  OffHeapBuffer.unsafe_set_int64_le_exn buf ~pos:(16*i + 8) k;
+  OffHeapBuffer.unsafe_set_int64_le_exn buf ~pos:(16*i + 16) v
 
 (* NOTE: this is kinda sketchy. The page cache manages writing back all pages except this one,w hich we maintain a separate copy of an occasionally re-write back. it's a little sketchy. Maybe we should modify the page cache to maintain a constant copy of page 0.*)
 let save_pagetbl_to_page0 t =
@@ -68,7 +66,7 @@ let seek k (buf @ read) =
       if Int.equal k' k then Some i
       else loop (i+1)
   in
-  let res = loop 0 in res
+  (loop 0 [@nontail])
 
 let prefill fd = 
   let two_empty_pages = Bytes.make 8192 (Char.of_int_exn 0) in
