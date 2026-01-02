@@ -25,25 +25,25 @@ repeated, N times.
 let max_num_entries = Page.page_size / 16 - 1
 
 let num_entries (buf @ read) =
-  OffHeapBuffer.unsafe_get_int64_le_exn buf ~pos:0
+  Off_heap_buffer.unsafe_get_int64_le_exn buf ~pos:0
 
 let set_num_entries buf n =
-  OffHeapBuffer.unsafe_set_int64_le_exn buf ~pos:0 n
+  Off_heap_buffer.unsafe_set_int64_le_exn buf ~pos:0 n
 
 let incr_num_entries buf =
-  let num_entries = OffHeapBuffer.unsafe_get_int64_le_exn buf ~pos:0 in
-  OffHeapBuffer.unsafe_set_int64_le_exn buf ~pos:0 (num_entries + 1)
+  let num_entries = Off_heap_buffer.unsafe_get_int64_le_exn buf ~pos:0 in
+  Off_heap_buffer.unsafe_set_int64_le_exn buf ~pos:0 (num_entries + 1)
 
 let get_entry (buf @ read) i =
   assert Int.(i < 512);
-  let k = OffHeapBuffer.unsafe_get_int64_le_exn buf ~pos:(16*i + 8) in
-  let v = OffHeapBuffer.unsafe_get_int64_le_exn buf ~pos:(16*i + 16) in
+  let k = Off_heap_buffer.unsafe_get_int64_le_exn buf ~pos:(16*i + 8) in
+  let v = Off_heap_buffer.unsafe_get_int64_le_exn buf ~pos:(16*i + 16) in
   (~k,~v)
 
 let set_entry buf i ~k ~v  =
   assert Int.(i < 512);
-  OffHeapBuffer.unsafe_set_int64_le_exn buf ~pos:(16*i + 8) k;
-  OffHeapBuffer.unsafe_set_int64_le_exn buf ~pos:(16*i + 16) v
+  Off_heap_buffer.unsafe_set_int64_le_exn buf ~pos:(16*i + 8) k;
+  Off_heap_buffer.unsafe_set_int64_le_exn buf ~pos:(16*i + 16) v
 
 (* NOTE: this is kinda sketchy. The page cache manages writing back all pages except this one,w hich we maintain a separate copy of an occasionally re-write back. it's a little sketchy. Maybe we should modify the page cache to maintain a constant copy of page 0.*)
 let save_pagetbl_to_page0 t =

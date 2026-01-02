@@ -11,7 +11,7 @@ module Header = struct
 
   let classify (page @ local) @ local = exclave_
     let buf = Page.underlying_read_only page in
-    let header_byte = OffHeapBuffer.unsafe_get_int8 buf ~pos:0 in
+    let header_byte = Off_heap_buffer.unsafe_get_int8 buf ~pos:0 in
     match of_int header_byte with
     | Internal -> Either.First page
     | Leaf -> Either.Second page
@@ -36,11 +36,11 @@ module Internal = struct
 
   let num_keys t =
     let buf = Page.underlying_read_only t in
-    (OffHeapBuffer.unsafe_get_int16_le buf ~pos:1 [@nontail])
+    (Off_heap_buffer.unsafe_get_int16_le buf ~pos:1 [@nontail])
 
   let set_num_keys t n =
     let buf = Page.underlying t in
-    (OffHeapBuffer.unsafe_set_int16_le_exn buf ~pos:1 n [@nontail])
+    (Off_heap_buffer.unsafe_set_int16_le_exn buf ~pos:1 n [@nontail])
 
   let is_full t =
     num_keys t >= max_keys
@@ -48,22 +48,22 @@ module Internal = struct
   let get_key t i =
     let buf = Page.underlying_read_only t in
     let pos = tbl_start + (i * 16) + 8 in
-    (OffHeapBuffer.unsafe_get_int64_le_exn buf ~pos [@nontail])
+    (Off_heap_buffer.unsafe_get_int64_le_exn buf ~pos [@nontail])
 
   let get_child t i =
     let buf = Page.underlying_read_only t in
     let pos = tbl_start + (i * 16) in
-    Pageno.of_int (OffHeapBuffer.unsafe_get_int64_le_exn buf ~pos)
+    Pageno.of_int (Off_heap_buffer.unsafe_get_int64_le_exn buf ~pos)
 
   let set_key t i key =
     let buf = Page.underlying t in
     let pos = tbl_start + (i * 16) + 8 in
-    (OffHeapBuffer.unsafe_set_int64_le_exn buf ~pos key [@nontail])
+    (Off_heap_buffer.unsafe_set_int64_le_exn buf ~pos key [@nontail])
 
   let set_child t i pageno =
     let buf = Page.underlying t in
     let pos = tbl_start + (i * 16) in
-    (OffHeapBuffer.unsafe_set_int64_le_exn buf ~pos (Pageno.to_int pageno) [@nontail])
+    (Off_heap_buffer.unsafe_set_int64_le_exn buf ~pos (Pageno.to_int pageno) [@nontail])
 
   let lookup_key (t @ local) k =
     let buf = Page.underlying_read_only t in
@@ -71,11 +71,11 @@ module Internal = struct
     let rec search lo hi =
       if lo >= hi then
         let pos = tbl_start + (lo * 16) in
-        Pageno.of_int (OffHeapBuffer.unsafe_get_int64_le_exn buf ~pos)
+        Pageno.of_int (Off_heap_buffer.unsafe_get_int64_le_exn buf ~pos)
       else
         let mid = (lo + hi) / 2 in
         let key_pos = tbl_start + (mid * 16) + 8 in
-        let mid_key = OffHeapBuffer.unsafe_get_int64_le_exn buf ~pos:key_pos in
+        let mid_key = Off_heap_buffer.unsafe_get_int64_le_exn buf ~pos:key_pos in
         if k < mid_key then
           search lo mid
         else
@@ -85,8 +85,8 @@ module Internal = struct
 
   let init page =
     let buf = Page.underlying page in
-    (OffHeapBuffer.unsafe_set_int8_exn buf ~pos:0 (Header.to_int Header.Internal) [@nontail]);
-    (OffHeapBuffer.unsafe_set_int16_le_exn buf ~pos:1 0 [@nontail])   (* num_keys = 0 *)
+    (Off_heap_buffer.unsafe_set_int8_exn buf ~pos:0 (Header.to_int Header.Internal) [@nontail]);
+    (Off_heap_buffer.unsafe_set_int16_le_exn buf ~pos:1 0 [@nontail])   (* num_keys = 0 *)
 end
 
 module Leaf = struct
@@ -104,11 +104,11 @@ module Leaf = struct
 
   let num_keys t =
     let buf = Page.underlying_read_only t in
-    (OffHeapBuffer.unsafe_get_int16_le buf ~pos:1 [@nontail])
+    (Off_heap_buffer.unsafe_get_int16_le buf ~pos:1 [@nontail])
 
   let set_num_keys t n =
     let buf = Page.underlying t in
-    (OffHeapBuffer.unsafe_set_int16_le_exn buf ~pos:1 n [@nontail])
+    (Off_heap_buffer.unsafe_set_int16_le_exn buf ~pos:1 n [@nontail])
 
   let is_full t =
     num_keys t >= max_keys
@@ -116,15 +116,15 @@ module Leaf = struct
   let get_entry t i =
     let buf = Page.underlying_read_only t in
     let pos = entries_start + (i * 16) in
-    let key = OffHeapBuffer.unsafe_get_int64_le_exn buf ~pos in
-    let pageno = Pageno.of_int (OffHeapBuffer.unsafe_get_int64_le_exn buf ~pos:(pos + 8)) in
+    let key = Off_heap_buffer.unsafe_get_int64_le_exn buf ~pos in
+    let pageno = Pageno.of_int (Off_heap_buffer.unsafe_get_int64_le_exn buf ~pos:(pos + 8)) in
     (key, pageno)
 
   let set_entry t i ~key ~pointer =
     let buf = Page.underlying t in
     let pos = entries_start + (i * 16) in
-    (OffHeapBuffer.unsafe_set_int64_le_exn buf ~pos key [@nontail]);
-    (OffHeapBuffer.unsafe_set_int64_le_exn buf ~pos:(pos + 8) (Pageno.to_int pointer) [@nontail])
+    (Off_heap_buffer.unsafe_set_int64_le_exn buf ~pos key [@nontail]);
+    (Off_heap_buffer.unsafe_set_int64_le_exn buf ~pos:(pos + 8) (Pageno.to_int pointer) [@nontail])
 
   let lookup_key (t @ local) k =
     let n = num_keys t in
@@ -167,8 +167,8 @@ module Leaf = struct
 
   let init page =
     let buf = Page.underlying page in
-    (OffHeapBuffer.unsafe_set_int8_exn buf ~pos:0 (Header.to_int Header.Leaf) [@nontail]);
-    (OffHeapBuffer.unsafe_set_int16_le_exn buf ~pos:1 0 [@nontail])
+    (Off_heap_buffer.unsafe_set_int8_exn buf ~pos:0 (Header.to_int Header.Leaf) [@nontail]);
+    (Off_heap_buffer.unsafe_set_int16_le_exn buf ~pos:1 0 [@nontail])
 end
 
 

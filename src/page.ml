@@ -4,7 +4,7 @@ open! Core_unix
 let page_size = 16384
 
 type t = {
-  raw : OffHeapBuffer.t;
+  raw : Off_heap_buffer.t;
   fd : File_descr.t;
   mutable pageno : Pageno.t;
   mutable dirty : bool
@@ -23,7 +23,7 @@ let seek_to_page fd pageno =
 let load t pageno =
   let buf = t.raw in
   seek_to_page t.fd pageno;
-  let num_read = OffHeapBuffer.read t.fd buf in
+  let num_read = Off_heap_buffer.read t.fd buf in
   assert (Int.equal num_read page_size);
   t.pageno <- pageno;
   t.dirty <- false
