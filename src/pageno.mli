@@ -1,4 +1,4 @@
-type t
+type t [@@deriving sexp, compare, hash]
 
 val zero : t
 val to_int : t -> int

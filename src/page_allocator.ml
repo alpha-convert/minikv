@@ -20,4 +20,3 @@ let allocate_page t : Pageno.t =
   let sz = (fstat t.fd).st_size in
   ftruncate t.fd Int64.(sz + (Int64.of_int Page.page_size));
   t.last_pageno
-

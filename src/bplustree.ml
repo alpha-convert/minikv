@@ -85,7 +85,7 @@ module Internal = struct
 
   let init page =
     let buf = Page.underlying page in
-    (OffHeapBuffer.unsafe_set_int8_le_exn buf ~pos:0 (Header.to_int Header.Internal) [@nontail]);
+    (OffHeapBuffer.unsafe_set_int8_exn buf ~pos:0 (Header.to_int Header.Internal) [@nontail]);
     (OffHeapBuffer.unsafe_set_int16_le_exn buf ~pos:1 0 [@nontail])   (* num_keys = 0 *)
 end
 
@@ -128,28 +128,47 @@ module Leaf = struct
 
   let lookup_key (t @ local) k =
     let n = num_keys t in
-    let rec scan i =
-      if i >= n then
+    let rec binary_search lo hi =
+      if lo >= hi then
         None
       else
-        let (key, pageno) = get_entry t i in
+        let mid = (lo + hi) / 2 in
+        let (key, pageno) = get_entry t mid in
         if Int.equal key k then
           Some pageno
+        else if k < key then
+          binary_search lo mid
         else
-          scan (i + 1)
+          binary_search (mid + 1) hi
     in
-    (scan 0 [@nontail])
-
+    (binary_search 0 n [@nontail])
+  
   (* Insert key-value pair into leaf, assumes not full *)
   let insert t ~key ~value =
     let n = num_keys t in
-    set_entry t n ~key ~pointer:value;
+    let rec find_pos lo hi =
+      if lo >= hi then lo
+      else
+        let mid = (lo + hi) / 2 in
+        let (mid_key, _) = get_entry t mid in
+        if key < mid_key then
+          find_pos lo mid
+        else
+          find_pos (mid + 1) hi
+    in
+    let pos = find_pos 0 n in
+    for i = n - 1 downto pos do
+      let (k, p) = get_entry t i in
+      set_entry t (i + 1) ~key:k ~pointer:p
+    done;
+    (* Insert at the correct position *)
+    set_entry t pos ~key ~pointer:value;
     set_num_keys t (n + 1)
 
   let init page =
     let buf = Page.underlying page in
-    (OffHeapBuffer.unsafe_set_int16_le_exn buf ~pos:0 (Header.to_int Header.Leaf) [@nontail]);
-    (OffHeapBuffer.unsafe_set_int16_le_exn buf ~pos:1 0 [@nontail])   (* num_keys = 0 *)
+    (OffHeapBuffer.unsafe_set_int8_exn buf ~pos:0 (Header.to_int Header.Leaf) [@nontail]);
+    (OffHeapBuffer.unsafe_set_int16_le_exn buf ~pos:1 0 [@nontail])
 end
 
 

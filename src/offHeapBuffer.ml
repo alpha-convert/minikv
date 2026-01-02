@@ -12,7 +12,7 @@ let unsafe_get_int16_le (buf : t @ read local) ~pos =
 let unsafe_get_int64_le_exn (buf : t @ read local) ~pos =
   Bigstring.unsafe_get_int64_le_exn (Obj.magic Obj.magic buf) ~pos
 
-let unsafe_set_int8_le_exn (buf : t @ local) ~pos value =
+let unsafe_set_int8_exn (buf : t @ local) ~pos value =
   Bigstring.unsafe_set (Obj.magic Obj.magic buf) pos (Char.of_int_exn value)
 
 let unsafe_set_int16_le_exn (buf : t @ local) ~pos value =

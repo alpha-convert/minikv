@@ -17,8 +17,9 @@ let compare_seqno s s' =
 type t =
   {
     fd : File_descr.t;
-    slots : slot option Array.t;
-    mutable latest_seqno : int
+    slots : slot Array.t;
+    mutable latest_seqno : int;
+    pageno_to_slot : (Pageno.t, int) Hashtbl.t
   }
 
 let next_seqno t =
@@ -27,57 +28,54 @@ let next_seqno t =
   a
 
 let flush_all t =
-  Array.iter t.slots ~f:(function
-  | None -> ()
-  | Some {pg;_} -> Page.flush pg)
+  Array.iter t.slots ~f:(function {pg;_} -> Page.flush pg)
 
 let create fd ~size =
-  {fd ; slots = Array.create ~len:size None; latest_seqno = 0}
-
-let get_victim_or_empty t =
-  let first_empty = Array.find_mapi t.slots ~f:(fun i pg_opt ->
-      match pg_opt with
-      | None -> Some i
-      | _ -> None
-    )
+  let dummy_slot _ =
+    let dummy_pg = Page.create fd (Pageno.of_int (-1)) in
+    { in_use = false; pg = dummy_pg; seqno = -1 }
   in
-  match first_empty with
-  | Some i -> `Empty i
-  | None ->
-      let available_slots = Array.filter_opt t.slots |> Array.filter ~f:(fun slot -> not slot.in_use) in
-      match Array.min_elt available_slots ~compare:compare_seqno with
-      | Some victim -> `Victim victim
-      | None -> failwith "No available slots."
+  {
+    fd;
+    slots = Array.init size ~f:dummy_slot ;
+    latest_seqno = 0;
+    pageno_to_slot = Hashtbl.create (module Pageno)
+  }
+
+let evict t =
+  let res =
+    Array.foldi t.slots ~init:None ~f:(fun i best slot ->
+    if slot.in_use then best
+    else
+      match best with
+      | None -> Some (i, slot)
+      | Some (_, best_slot) ->
+          if compare_seqno slot best_slot < 0
+          then Some (i,slot)
+          else best)
+  in
+  let (idx,slot) = Option.value_exn res ~message:"No available slots." in
+  let old_pageno = Page.pageno slot.pg in
+  Hashtbl.remove t.pageno_to_slot old_pageno;
+  Page.flush slot.pg;
+  (idx,slot)
 
 
-let cache_lookup t pageno =
-  Array.find_map t.slots ~f:(
-    fun pg_opt ->
-      match pg_opt with
-      | None -> None
-      | Some ({pg;_} as slot) ->
-        if Pageno.equal (Page.pageno pg) pageno then Some slot else None
-    )
+let cache_lookup t pageno = exclave_
+  match Hashtbl.find t.pageno_to_slot pageno with
+  | Some slot_idx -> Some t.slots.(slot_idx)
+  | None -> None
 
 let with_page t ?(force_flush = false) pageno (f : (Page.t @ local -> 'a) @ local) =
   let slot =
     match cache_lookup t pageno with
-    | Some slot -> slot.seqno <- next_seqno t; slot
-    | None ->
-      (match get_victim_or_empty t with
-       | `Empty i ->
-          let pg = Page.create t.fd pageno in
-          Printf.printf "loading pageno: %d" (Pageno.to_int pageno);
-          Page.load pg pageno;
-          let slot = {pg;seqno = next_seqno t; in_use = true} in
-          t.slots.(i) <- Some slot;
-          slot
-       | `Victim victim_slot ->
-          Page.flush victim_slot.pg;
-          Page.load victim_slot.pg pageno;
-          victim_slot.seqno <- next_seqno t;
-          victim_slot)
+    | Some slot -> slot
+    | None -> let (i,slot) = evict t in
+               Page.load slot.pg pageno;
+               Hashtbl.set t.pageno_to_slot ~key:pageno ~data:i;
+               slot
   in
+  slot.seqno <- next_seqno t;
   slot.in_use <- true;
   let res = f slot.pg in
   slot.in_use <- false;
