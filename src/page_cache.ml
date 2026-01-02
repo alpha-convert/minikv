@@ -60,16 +60,10 @@ let evict t =
   Page.flush slot.pg;
   (idx,slot)
 
-
-let cache_lookup t pageno = exclave_
-  match Hashtbl.find t.pageno_to_slot pageno with
-  | Some slot_idx -> Some t.slots.(slot_idx)
-  | None -> None
-
 let with_page t ?(force_flush = false) pageno (f : (Page.t @ local -> 'a) @ local) =
   let slot =
-    match cache_lookup t pageno with
-    | Some slot -> slot
+    match Hashtbl.find t.pageno_to_slot pageno with
+    | Some slot_idx -> t.slots.(slot_idx)
     | None -> let (i,slot) = evict t in
                Page.load slot.pg pageno;
                Hashtbl.set t.pageno_to_slot ~key:pageno ~data:i;
