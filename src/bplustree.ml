@@ -17,6 +17,7 @@ module Header = struct
     | Leaf -> Either.Second page
 
   let as_leaf (page @ local) @ local = exclave_ page
+  let as_internal (page @ local) @ local = exclave_ page
 end
 
 
@@ -214,7 +215,7 @@ module Leaf = struct
       else
         let mid = (lo + hi) / 2 in
         let (mid_key, _) = get_entry t mid in
-        if k < mid_key then
+        if k <= mid_key then
           search lo mid
         else
           search (mid + 1) hi
@@ -281,7 +282,7 @@ module Leaf = struct
 
     (pivot_key, right_pageno)
 
-  let insert t ~key ~value page_cache allocator =
+  let insert (t @ local) ~key ~value page_cache allocator =
     if not (is_full t) then begin
       insert_with_space t ~key ~value;
       `NoSplit
@@ -318,20 +319,26 @@ let lookup root cache key =
 
 let insert root cache allocator ~key ~value =
   let rec insert_into_node pageno =
-    Page_cache.with_page cache pageno (fun page ->
-      match Header.classify page with
-      | Either.First internal_node ->
-          (* Internal node: descend to find the right child *)
-          let child_pageno = Internal.lookup_key internal_node key in
-          (match insert_into_node child_pageno with
-          | `NoSplit -> `NoSplit
-          | `Split (pivot, right_child) ->
-              (* Child split, insert pivot into this internal node *)
-              Internal.insert internal_node ~key:pivot ~right_child cache allocator)
-      | Either.Second leaf ->
-          (* Leaf node: insert the key-value pair *)
-          Leaf.insert leaf ~key ~value cache allocator
-    )
+    (* First, determine if this is an internal or leaf node and get child pageno if internal *)
+    let next_step =
+      Page_cache.with_page cache pageno (fun page ->
+        match Header.classify page with
+        | Either.First internal_node ->
+            let child_pageno = Internal.lookup_key internal_node key in
+            `Internal child_pageno
+        | Either.Second _ ->
+            `Leaf (Leaf.insert (Header.as_leaf page) ~key ~value cache allocator [@nontail])
+      )
+    in
+    match next_step with
+    | `Leaf res -> res
+    | `Internal child_pageno ->
+        (match insert_into_node child_pageno with
+        | `NoSplit -> `NoSplit
+        | `Split (pivot, right_child) ->
+            Page_cache.with_page cache pageno (fun page ->
+              Internal.insert (Header.as_internal page) ~key:pivot ~right_child cache allocator [@nontail]
+            ))
   in
 
   match insert_into_node root with
