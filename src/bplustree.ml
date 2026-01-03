@@ -32,7 +32,7 @@ module Internal = struct
   let tbl_start = 3  (* 1 byte header + 2 bytes num_keys *)
 
   (* Max keys = (page_size - 3) / 16 *)
-  let max_keys = (Page.page_size - 3) / 16
+  let max_keys = (Page.page_size - tbl_start) / 16
 
   let num_keys t =
     let buf = Page.underlying_read_only t in
@@ -87,6 +87,79 @@ module Internal = struct
     let buf = Page.underlying page in
     (Off_heap_buffer.unsafe_set_int8_exn buf ~pos:0 (Header.to_int Header.Internal) [@nontail]);
     (Off_heap_buffer.unsafe_set_int16_le_exn buf ~pos:1 0 [@nontail])   (* num_keys = 0 *)
+
+  (* Insert a key and right child into internal node, assumes not full *)
+  let insert_with_space t ~key ~right_child =
+    assert (num_keys t < max_keys);
+    let n = num_keys t in
+
+    (* Find position where key should go *)
+    let rec find_pos i =
+      if i >= n then i
+      else if key < get_key t i then i
+      else find_pos (i + 1)
+    in
+    let pos = find_pos 0 in
+
+    (* Shift keys and children to make room *)
+    for i = n - 1 downto pos do
+      set_key t (i + 1) (get_key t i);
+      set_child t (i + 2) (get_child t (i + 1))
+    done;
+
+    (* Insert new key and right child *)
+    set_key t pos key;
+    set_child t (pos + 1) right_child;
+    set_num_keys t (n + 1)
+
+  (* Split a full internal node *)
+  let split t ~key ~right_child page_cache allocator =
+    assert (num_keys t = max_keys);
+
+    (* Build in-memory array of all keys and children *)
+    let entries = Array.init (max_keys + 1) (fun i ->
+      if i < max_keys then (get_key t i, get_child t (i + 1))
+      else (key, right_child)
+    ) in
+
+    (* Sort by key *)
+    Array.sort ~compare:(fun (k1, _) (k2, _) -> Int.compare k1 k2) entries;
+
+    (* Middle key gets promoted *)
+    let mid = (max_keys + 1) / 2 in
+    let (promoted_key, mid_right_child) = entries.(mid) in
+
+    (* Write left half back to original node *)
+    for i = 0 to mid - 1 do
+      let (k, child) = entries.(i) in
+      set_key t i k;
+      set_child t (i + 1) child
+    done;
+    set_num_keys t mid;
+
+    (* Create new right node and write right half *)
+    let right_pageno = Page_allocator.allocate_page allocator in
+    Page_cache.with_page page_cache right_pageno (fun right_page ->
+      init right_page;
+      (* First child of right node is the right child of the promoted key *)
+      set_child right_page 0 mid_right_child;
+      for i = mid + 1 to max_keys do
+        let (k, child) = entries.(i) in
+        set_key right_page (i - mid - 1) k;
+        set_child right_page (i - mid) child
+      done;
+      set_num_keys right_page (max_keys - mid)
+    );
+
+    (promoted_key, right_pageno)
+
+  let insert t ~key ~right_child page_cache allocator =
+    if not (is_full t) then begin
+      insert_with_space t ~key ~right_child;
+      `NoSplit
+    end else
+      `Split (split t ~key ~right_child page_cache allocator)
+
 end
 
 module Leaf = struct
@@ -94,13 +167,14 @@ module Leaf = struct
      - header: 8-bit node type
      - num_keys: 16-bit little endian
      - entries: (key, pageno) pairs (each 16 bytes: 8-byte key + 8-byte pageno)
-       stored sequentially, unsorted *)
+       stored sequentially, sorted *)
   type t = Page.t
 
   let entries_start = 3  (* 1 byte header + 2 bytes num_keys *)
 
   (* Max keys = (page_size - 3) / 16 *)
-  let max_keys = (Page.page_size - 3) / 16
+  let max_keys = (Page.page_size - entries_start) / 16
+  let degree = max_keys / 2
 
   let num_keys t =
     let buf = Page.underlying_read_only t in
@@ -125,38 +199,43 @@ module Leaf = struct
     let pos = entries_start + (i * 16) in
     (Off_heap_buffer.unsafe_set_int64_le_exn buf ~pos key [@nontail]);
     (Off_heap_buffer.unsafe_set_int64_le_exn buf ~pos:(pos + 8) (Pageno.to_int pointer) [@nontail])
+   
+  let init page =
+    let buf = Page.underlying page in
+    (Off_heap_buffer.unsafe_set_int8_exn buf ~pos:0 (Header.to_int Header.Leaf) [@nontail]);
+    (Off_heap_buffer.unsafe_set_int16_le_exn buf ~pos:1 0 [@nontail])
 
-  let lookup_key (t @ local) k =
+  (* Binary search to find the position where key should be inserted.
+     Returns the index where key is found or should be inserted. *)
+  let find_key_pos (t @ local) k =
     let n = num_keys t in
-    let rec binary_search lo hi =
-      if lo >= hi then
-        None
-      else
-        let mid = (lo + hi) / 2 in
-        let (key, pageno) = get_entry t mid in
-        if Int.equal key k then
-          Some pageno
-        else if k < key then
-          binary_search lo mid
-        else
-          binary_search (mid + 1) hi
-    in
-    (binary_search 0 n [@nontail])
-  
-  (* Insert key-value pair into leaf, assumes not full *)
-  let insert t ~key ~value =
-    let n = num_keys t in
-    let rec find_pos lo hi =
+    let rec search lo hi =
       if lo >= hi then lo
       else
         let mid = (lo + hi) / 2 in
         let (mid_key, _) = get_entry t mid in
-        if key < mid_key then
-          find_pos lo mid
+        if k < mid_key then
+          search lo mid
         else
-          find_pos (mid + 1) hi
+          search (mid + 1) hi
     in
-    let pos = find_pos 0 n in
+    (search 0 n [@nontail])
+
+  let lookup_key (t @ local) k =
+    let pos = find_key_pos t k in
+    let n = num_keys t in
+    if pos < n then
+      let (key, pageno) = get_entry t pos in
+      if Int.equal key k then Some pageno else None
+    else
+      None
+
+  (* Insert key-value pair into leaf, assumes not full *)
+  let insert_with_space t ~key ~value =
+    assert (num_keys t < max_keys);
+    let n = num_keys t in
+    let pos = find_key_pos t key in
+    (* Shift entries to make room *)
     for i = n - 1 downto pos do
       let (k, p) = get_entry t i in
       set_entry t (i + 1) ~key:k ~pointer:p
@@ -165,12 +244,50 @@ module Leaf = struct
     set_entry t pos ~key ~pointer:value;
     set_num_keys t (n + 1)
 
-  let init page =
-    let buf = Page.underlying page in
-    (Off_heap_buffer.unsafe_set_int8_exn buf ~pos:0 (Header.to_int Header.Leaf) [@nontail]);
-    (Off_heap_buffer.unsafe_set_int16_le_exn buf ~pos:1 0 [@nontail])
-end
+  (* Split a full leaf page. The page must have max_keys many keys. *)
+  let split t ~key ~value page_cache allocator =
+    assert (num_keys t = max_keys);
 
+    (* Build in-memory array of all entries *)
+    let entries = Array.init (max_keys + 1) (fun i ->
+      if i < max_keys then get_entry t i
+      else (key, value)
+    ) in
+
+    (* Sort the array *)
+    Array.sort ~compare:(fun (k1, _) (k2, _) -> Int.compare k1 k2) entries;
+
+    (* Find the middle element *)
+    let mid = (max_keys + 1) / 2 in
+    let (pivot_key, _) = entries.(mid) in
+
+    (* Write left half back to original page *)
+    for i = 0 to mid - 1 do
+      let (k, v) = entries.(i) in
+      set_entry t i ~key:k ~pointer:v
+    done;
+    set_num_keys t mid;
+
+    (* Create new page and write right half *)
+    let right_pageno = Page_allocator.allocate_page allocator in
+    Page_cache.with_page page_cache right_pageno (fun right_page ->
+      init right_page;
+      for i = mid to max_keys do
+        let (k, v) = entries.(i) in
+        set_entry right_page (i - mid) ~key:k ~pointer:v
+      done;
+      set_num_keys right_page (max_keys + 1 - mid)
+    );
+
+    (pivot_key, right_pageno)
+
+  let insert t ~key ~value page_cache allocator =
+    if not (is_full t) then begin
+      insert_with_space t ~key ~value;
+      `NoSplit
+    end else
+      `Split (split t ~key ~value page_cache allocator)
+end
 
 (* A Bplustree.t is just the page number of its root *)
 type t = Pageno.t
@@ -197,17 +314,36 @@ let lookup root cache key =
   let leaf_pageno = lookup_leaf_page root cache key in
   Page_cache.with_page cache leaf_pageno (fun page ->
     let leaf = Header.as_leaf page in
-    Leaf.lookup_key leaf key [@nontail]
-  )
+    Leaf.lookup_key leaf key [@nontail])
 
-(* Simple insert - for now, just insert into leaf without handling splits *)
 let insert root cache allocator ~key ~value =
-  let leaf_pageno = lookup_leaf_page root cache key in
-  Page_cache.with_page cache leaf_pageno (fun page ->
-    let leaf = Header.as_leaf page in
-    if not (Leaf.is_full leaf) then begin
-      Leaf.insert leaf ~key ~value;
-      root
-    end else
-      failwith "TODO: handle leaf split"
-  )
+  let rec insert_into_node pageno =
+    Page_cache.with_page cache pageno (fun page ->
+      match Header.classify page with
+      | Either.First internal_node ->
+          (* Internal node: descend to find the right child *)
+          let child_pageno = Internal.lookup_key internal_node key in
+          (match insert_into_node child_pageno with
+          | `NoSplit -> `NoSplit
+          | `Split (pivot, right_child) ->
+              (* Child split, insert pivot into this internal node *)
+              Internal.insert internal_node ~key:pivot ~right_child cache allocator)
+      | Either.Second leaf ->
+          (* Leaf node: insert the key-value pair *)
+          Leaf.insert leaf ~key ~value cache allocator
+    )
+  in
+
+  match insert_into_node root with
+  | `NoSplit -> root
+  | `Split (pivot, right_pageno) ->
+      (* Root split: create new root with two children *)
+      let new_root_pageno = Page_allocator.allocate_page allocator in
+      Page_cache.with_page cache new_root_pageno (fun new_root ->
+        Internal.init new_root;
+        Internal.set_child new_root 0 root;
+        Internal.set_key new_root 0 pivot;
+        Internal.set_child new_root 1 right_pageno;
+        Internal.set_num_keys new_root 1
+      );
+      new_root_pageno

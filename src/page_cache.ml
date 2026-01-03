@@ -60,7 +60,7 @@ let evict t =
   Page.flush slot.pg;
   (idx,slot)
 
-let with_page t ?(force_flush = false) pageno (f : (Page.t @ local -> 'a) @ local) =
+let with_page t ?(force_flush = false) pageno f =
   let slot =
     match Hashtbl.find t.pageno_to_slot pageno with
     | Some slot_idx -> t.slots.(slot_idx)
