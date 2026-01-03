@@ -1,0 +1,7 @@
+(test
+ (name test_bplustree)
+ (libraries minikv base_quickcheck core core_unix)
+ (preprocess
+  (pps ppx_jane))
+ )
+
