@@ -36,8 +36,11 @@ module Internal = struct
 
   let tbl_start = 3  (* 1 byte header + 2 bytes num_keys *)
 
-  (* Max keys = (page_size - 3) / 16 *)
-  let max_keys = (Page.page_size - tbl_start) / 16
+  (* Max keys: for n keys we need n+1 children (8 bytes each) + n keys (8 bytes each)
+     = 8(n+1) + 8n = 16n + 8 bytes
+     So: 16n + 8 <= page_size - 3
+     => n <= (page_size - 3 - 8) / 16 *)
+  let max_keys = (Page.page_size - tbl_start - 8) / 16
 
   let num_keys t =
     let buf = Page.underlying_read_only t in
@@ -295,7 +298,29 @@ module Leaf = struct
 end
 
 (* A Bplustree.t is just the page number of its root *)
-type t = Pageno.t
+type t = {
+  mutable root : Pageno.t;
+  cache : Page_cache.t;
+  allocator : Page_allocator.t
+}
+
+let root_pageno t = t.root
+
+let load cache allocator root =
+  {root;cache;allocator}
+
+let create cache allocator root =
+  (* Create initial leaf child *)
+  let leaf_pageno = Page_allocator.allocate_page allocator in
+  Page_cache.with_page cache leaf_pageno (fun leaf ->
+    Leaf.init leaf
+  );
+  (* Initialize root as internal with one child *)
+  Page_cache.with_page cache root (fun page ->
+    Internal.init page;
+    Internal.set_child page 0 leaf_pageno
+  );
+  {root;cache;allocator}
 
 let lookup_leaf_page root cache key =
   let rec loop pageno =
@@ -315,14 +340,17 @@ let lookup_leaf_page root cache key =
   in
   loop root
 
-let lookup root cache key =
+let lookup t key =
+  let {root;cache;allocator} = t in
   let leaf_pageno = lookup_leaf_page root cache key in
   Page_cache.with_page cache leaf_pageno (fun page ->
     let leaf = Header.as_leaf page in
     Leaf.lookup_key leaf key [@nontail])
 
-let insert root cache allocator ~key ~value =
+let insert t ~key ~value =
+  let {root;cache;allocator} = t in
   let rec insert_into_node pageno =
+    (* First, determine if this is an internal or leaf node and get child pageno if internal *)
     let next_step =
       Page_cache.with_page cache pageno (fun page ->
         match Header.classify page with
@@ -344,16 +372,19 @@ let insert root cache allocator ~key ~value =
             ))
   in
 
-  match insert_into_node root with
-  | NoSplit -> root
-  | Split (pivot, right_pageno) ->
-      (* Root split: create new root with two children *)
-      let new_root_pageno = Page_allocator.allocate_page allocator in
-      Page_cache.with_page cache new_root_pageno (fun new_root ->
-        Internal.init new_root;
-        Internal.set_child new_root 0 root;
-        Internal.set_key new_root 0 pivot;
-        Internal.set_child new_root 1 right_pageno;
-        Internal.set_num_keys new_root 1
-      );
-      new_root_pageno
+  let root =
+    match insert_into_node root with
+    | NoSplit -> root
+    | Split (pivot, right_pageno) ->
+        (* Root split: create new root with two children *)
+        let new_root_pageno = Page_allocator.allocate_page allocator in
+        Page_cache.with_page cache new_root_pageno (fun new_root ->
+          Internal.init new_root;
+          Internal.set_child new_root 0 root;
+          Internal.set_key new_root 0 pivot;
+          Internal.set_child new_root 1 right_pageno;
+          Internal.set_num_keys new_root 1
+        );
+        new_root_pageno
+  in
+  t.root <- root

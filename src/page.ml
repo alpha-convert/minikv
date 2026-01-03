@@ -1,7 +1,8 @@
 open! Core
 open! Core_unix
 
-let page_size = 16384
+(* let page_size = 16384 *)
+let page_size = 4096
 
 type t = {
   raw : Off_heap_buffer.t;
