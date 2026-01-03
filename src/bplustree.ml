@@ -218,7 +218,12 @@ module Leaf = struct
   let find_key_pos (t @ local) k =
     let n = num_keys t in
     let rec search lo hi =
-      if lo >= hi then lo
+      if lo >= hi then
+        if lo >= n then
+          (assert (lo == n); `Not_found n)
+        else
+          let (k', pageno) = get_entry t lo in
+          if Int.equal k k' then `Found_exact (~idx:lo,pageno) else `Found_other (~idx:lo,k',pageno)
       else
         let mid = (lo + hi) / 2 in
         let (mid_key, _) = get_entry t mid in
@@ -230,26 +235,22 @@ module Leaf = struct
     (search 0 n [@nontail])
 
   let lookup_key (t @ local) k =
-    let pos = find_key_pos t k in
-    let n = num_keys t in
-    if pos < n then
-      let (key, pageno) = get_entry t pos in
-      if Int.equal key k then Some pageno else None
-    else
-      None
+    match find_key_pos t k with
+    | `Not_found _ -> None
+    | `Found_exact (~idx:_,pageno) -> Some pageno
+    | `Found_other _ -> None
 
-  (* Insert key-value pair into leaf, assumes not full *)
-  let insert_with_space t ~key ~value =
-    assert (num_keys t < max_keys);
+  (* Insert key-value pair into leaf at given position, assumes not full and key doesn't exist *)
+  let insert_with_space t ~idx ~key ~value =
     let n = num_keys t in
-    let pos = find_key_pos t key in
+    assert (n < max_keys);
     (* Shift entries to make room *)
-    for i = n - 1 downto pos do
+    for i = n - 1 downto idx do
       let (k, p) = get_entry t i in
       set_entry t (i + 1) ~key:k ~pointer:p
     done;
     (* Insert at the correct position *)
-    set_entry t pos ~key ~pointer:value;
+    set_entry t idx ~key ~pointer:value;
     set_num_keys t (n + 1)
 
   (* Split a full leaf page. The page must have max_keys many keys. *)
@@ -290,11 +291,16 @@ module Leaf = struct
     (pivot_key, right_pageno)
 
   let insert (t @ local) ~key ~value page_cache allocator =
-    if not (is_full t) then begin
-      insert_with_space t ~key ~value;
-      SplitResult.NoSplit
-    end else
-      SplitResult.Split (split t ~key ~value page_cache allocator)
+    match find_key_pos t key with
+    | `Found_exact (~idx,pageno:_) ->
+        set_entry t idx ~key ~pointer:value;
+        SplitResult.NoSplit
+    | `Not_found idx | `Found_other (~idx,_,_) ->
+        if not (is_full t) then begin
+          insert_with_space t ~idx ~key ~value;
+          SplitResult.NoSplit
+        end else
+          SplitResult.Split (split t ~key ~value page_cache allocator)
 end
 
 (* A Bplustree.t is just the page number of its root *)
