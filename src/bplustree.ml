@@ -1,6 +1,10 @@
 open! Core
 open! Core_unix
 
+module SplitResult = struct
+  type t = NoSplit | Split of (int * Pageno.t)
+end
+
 module Header = struct
   type t =
     | Internal
@@ -157,9 +161,9 @@ module Internal = struct
   let insert t ~key ~right_child page_cache allocator =
     if not (is_full t) then begin
       insert_with_space t ~key ~right_child;
-      `NoSplit
+      SplitResult.NoSplit
     end else
-      `Split (split t ~key ~right_child page_cache allocator)
+      SplitResult.Split (split t ~key ~right_child page_cache allocator)
 
 end
 
@@ -285,9 +289,9 @@ module Leaf = struct
   let insert (t @ local) ~key ~value page_cache allocator =
     if not (is_full t) then begin
       insert_with_space t ~key ~value;
-      `NoSplit
+      SplitResult.NoSplit
     end else
-      `Split (split t ~key ~value page_cache allocator)
+      SplitResult.Split (split t ~key ~value page_cache allocator)
 end
 
 (* A Bplustree.t is just the page number of its root *)
@@ -319,7 +323,6 @@ let lookup root cache key =
 
 let insert root cache allocator ~key ~value =
   let rec insert_into_node pageno =
-    (* First, determine if this is an internal or leaf node and get child pageno if internal *)
     let next_step =
       Page_cache.with_page cache pageno (fun page ->
         match Header.classify page with
@@ -334,16 +337,16 @@ let insert root cache allocator ~key ~value =
     | `Leaf res -> res
     | `Internal child_pageno ->
         (match insert_into_node child_pageno with
-        | `NoSplit -> `NoSplit
-        | `Split (pivot, right_child) ->
+        | NoSplit -> NoSplit
+        | Split (pivot, right_child) ->
             Page_cache.with_page cache pageno (fun page ->
               Internal.insert (Header.as_internal page) ~key:pivot ~right_child cache allocator [@nontail]
             ))
   in
 
   match insert_into_node root with
-  | `NoSplit -> root
-  | `Split (pivot, right_pageno) ->
+  | NoSplit -> root
+  | Split (pivot, right_pageno) ->
       (* Root split: create new root with two children *)
       let new_root_pageno = Page_allocator.allocate_page allocator in
       Page_cache.with_page cache new_root_pageno (fun new_root ->
