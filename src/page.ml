@@ -38,7 +38,7 @@ let set_pageno t pageno =
 let flush (pg @ local) =
   if pg.dirty then begin
     seek_to_page pg.fd pg.pageno;
-    let num_written = write pg.fd ~buf:(Obj.magic Obj.magic pg.raw) in
+    let num_written = Bigstring_unix.write pg.fd (Obj.magic Obj.magic pg.raw : Bigstring_unix.t @ global) in
     assert (Int.equal num_written page_size);
     pg.dirty <- false
   end

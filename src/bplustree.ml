@@ -136,20 +136,12 @@ module Internal = struct
     (* Middle key gets promoted *)
     let mid = (max_keys + 1) / 2 in
     let (promoted_key, mid_right_child) = entries.(mid) in
-
-    (* Write left half back to original node *)
-    for i = 0 to mid - 1 do
-      let (k, child) = entries.(i) in
-      set_key t i k;
-      set_child t (i + 1) child
-    done;
     set_num_keys t mid;
 
     (* Create new right node and write right half *)
     let right_pageno = Page_allocator.allocate_page allocator in
     Page_cache.with_page page_cache right_pageno (fun right_page ->
       init right_page;
-      (* First child of right node is the right child of the promoted key *)
       set_child right_page 0 mid_right_child;
       for i = mid + 1 to max_keys do
         let (k, child) = entries.(i) in
@@ -303,6 +295,7 @@ module Leaf = struct
           SplitResult.Split (split t ~key ~value page_cache allocator)
 end
 
+(* TODO: this root is not yet durable! we don't write it bck onto page zero. *)
 (* A Bplustree.t is just the page number of its root *)
 type t = {
   mutable root : Pageno.t;
@@ -310,23 +303,20 @@ type t = {
   allocator : Page_allocator.t
 }
 
-let root_pageno t = t.root
+let root t = t.root
 
 let load cache allocator root =
   {root;cache;allocator}
 
-let create cache allocator root =
-  (* Create initial leaf child *)
+let create cache allocator =
   let leaf_pageno = Page_allocator.allocate_page allocator in
-  Page_cache.with_page cache leaf_pageno (fun leaf ->
-    Leaf.init leaf
-  );
-  (* Initialize root as internal with one child *)
-  Page_cache.with_page cache root (fun page ->
+  let root_pageno = Page_allocator.allocate_page allocator in
+  Page_cache.with_page cache leaf_pageno Leaf.init;
+  Page_cache.with_page cache root_pageno (fun page ->
     Internal.init page;
     Internal.set_child page 0 leaf_pageno
   );
-  {root;cache;allocator}
+  {root = root_pageno;cache;allocator}
 
 let lookup_leaf_page root cache key =
   let rec loop pageno =

@@ -1,8 +1,8 @@
 type t
-val create : Page_cache.t -> Page_allocator.t -> Pageno.t -> t
+val create : Page_cache.t -> Page_allocator.t -> t
 val load : Page_cache.t -> Page_allocator.t -> Pageno.t -> t
 
 val lookup : t -> int -> Pageno.t option
 val insert : t -> key:int -> value:Pageno.t -> unit
 
-val root_pageno : t -> Pageno.t
+val root : t -> Pageno.t

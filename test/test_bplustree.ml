@@ -10,9 +10,9 @@ let test_differential_insert_lookup () =
   end= struct
     type t = (int * Pageno.t) list [@@deriving sexp, quickcheck]
     let quickcheck_generator =
-      Generator.list_with_length ~length:5000
+      Generator.list_with_length ~length:500000
       (Generator.both
-         (Generator.int_uniform_inclusive 1 100)
+         (Generator.int_uniform_inclusive 1 10000)
          (Generator.map ~f:Pageno.of_int (Generator.int_uniform_inclusive 1 1000000)))
   end in
 
@@ -24,8 +24,7 @@ let test_differential_insert_lookup () =
     let allocator = Page_allocator.create fd in
     
     (* Initialize root as empty internal *)
-    let root_pageno = Page_allocator.allocate_page allocator in
-    let bptree = Bplustree.create page_cache allocator root_pageno in
+    let bptree = Bplustree.create page_cache allocator in
 
     let table = Int.Table.create () in
 
