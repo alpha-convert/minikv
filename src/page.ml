@@ -29,22 +29,19 @@ let load t pageno =
   t.pageno <- pageno;
   t.dirty <- false
 
-let clear_bytes t =
-  Bigstring.memset t.raw ~pos:0 ~len:page_size (Char.of_int_exn 0)
-
 let set_pageno t pageno =
   t.pageno <- pageno
 
 let flush (pg @ local) =
   if pg.dirty then begin
     seek_to_page pg.fd pg.pageno;
-    let num_written = Bigstring_unix.write pg.fd (Obj.magic Obj.magic pg.raw : Bigstring_unix.t @ global) in
+    let num_written = Off_heap_buffer.write pg.fd pg.raw in
     assert (Int.equal num_written page_size);
     pg.dirty <- false
   end
 
 let create fd pageno =
-  let raw = Bigstring.create page_size in
-  Bigstring.memset raw ~pos:0 ~len:page_size (Char.of_int_exn 0);
+  let raw = Off_heap_buffer.create page_size in
+  Off_heap_buffer.memset raw ~pos:0 ~len:page_size (Char.of_int_exn 0);
   {fd;pageno;raw; dirty = false}
 

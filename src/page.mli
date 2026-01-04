@@ -8,7 +8,6 @@ val page_size : int
 val load : t -> Pageno.t -> unit
 
 val set_pageno : t -> Pageno.t -> unit
-val clear_bytes : t -> unit
 
 val flush : t @ local -> unit
 
