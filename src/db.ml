@@ -3,135 +3,84 @@ open! Core_unix
 
 type t = {
   fd : File_descr.t;
-  page_tbl : (int,Pageno.t) Hashtbl.t;
+  bptree : Bplustree.t;
   page_cache : Page_cache.t;
-  page_allocator : Page_allocator.t
+  page_allocator : Page_allocator.t;
+  mutable latest_root_pageno : Pageno.t;
 }
 
-(*
-TODO: page 0 has metadata: the number of pages, the pageno which is the root of the b+tree. etc
-TODO: data pages, storing a string of size less than a page
-*)
+(* Metadata page (page 0) layout:
+   - offset 0: root_pageno (64-bit little endian)
+   - rest: reserved for future metadata *)
+module Metadata = struct
+  let metadata_pageno = Pageno.zero
+  let root_pageno_offset = 0
 
-(**
-The format of a page is:
-N, a number of entries
+  let read_root_pageno page_cache =
+    Page_cache.with_page page_cache metadata_pageno (fun page ->
+      let buf = Page.underlying_read_only page in
+      Pageno.of_int (Off_heap_buffer.unsafe_get_int64_le_exn buf ~pos:root_pageno_offset)
+    )
 
-K (as a 64-bit integer, little-endian)
-V (as a 64-bit integer, little-endian)
-repeated, N times.
-*)
+  let write_root_pageno page_cache root_pageno =
+    Page_cache.with_page page_cache metadata_pageno (fun page ->
+      let buf = Page.underlying page in
+      (Off_heap_buffer.unsafe_set_int64_le_exn buf ~pos:root_pageno_offset (Pageno.to_int root_pageno) [@nontail])
+    )
+end
 
-let max_num_entries = Page.page_size / 16 - 1
-
-let num_entries (buf @ read) =
-  Off_heap_buffer.unsafe_get_int64_le_exn buf ~pos:0
-
-let set_num_entries buf n =
-  Off_heap_buffer.unsafe_set_int64_le_exn buf ~pos:0 n
-
-let incr_num_entries buf =
-  let num_entries = Off_heap_buffer.unsafe_get_int64_le_exn buf ~pos:0 in
-  Off_heap_buffer.unsafe_set_int64_le_exn buf ~pos:0 (num_entries + 1)
-
-let get_entry (buf @ read) i =
-  assert Int.(i < 512);
-  let k = Off_heap_buffer.unsafe_get_int64_le_exn buf ~pos:(16*i + 8) in
-  let v = Off_heap_buffer.unsafe_get_int64_le_exn buf ~pos:(16*i + 16) in
-  (~k,~v)
-
-let set_entry buf i ~k ~v  =
-  assert Int.(i < 512);
-  Off_heap_buffer.unsafe_set_int64_le_exn buf ~pos:(16*i + 8) k;
-  Off_heap_buffer.unsafe_set_int64_le_exn buf ~pos:(16*i + 16) v
-
-(* NOTE: this is kinda sketchy. The page cache manages writing back all pages except this one,w hich we maintain a separate copy of an occasionally re-write back. it's a little sketchy. Maybe we should modify the page cache to maintain a constant copy of page 0.*)
-let save_pagetbl_to_page0 t =
-  Page_cache.with_page t.page_cache ~force_flush:true Pageno.zero (fun pg0 ->
-    let buf = Page.underlying pg0 in
-    List.iteri (Hashtbl.to_alist t.page_tbl) ~f:(fun i (k,pageno) ->
-      set_entry buf i ~k ~v:(Pageno.to_int pageno)
-    );
-    set_num_entries buf (Hashtbl.length t.page_tbl); ()
+let flush_metadata_if_new_root t = 
+  let root_pageno = Bplustree.root t.bptree in
+  if not (Pageno.equal root_pageno t.latest_root_pageno) then (
+    t.latest_root_pageno <- root_pageno;
+    Metadata.write_root_pageno t.page_cache root_pageno
   )
 
-let flush t = 
-  Page_cache.flush_all t.page_cache;
-  save_pagetbl_to_page0 t
-
-let seek k (buf @ read) =
-  let rec loop i =
-    if i >= num_entries buf then None
-    else
-      let (~k:k',~v:_) = get_entry buf i in
-      if Int.equal k' k then Some i
-      else loop (i+1)
-  in
-  (loop 0 [@nontail])
-
-let prefill fd = 
-  let two_empty_pages = Bytes.make (2 * Page.page_size) (Char.of_int_exn 0) in
-  ignore (Core_unix.lseek fd 0L ~mode:SEEK_SET);
-  ignore (Core_unix.write fd ~buf:two_empty_pages)
+let flush t =
+  flush_metadata_if_new_root t;
+  Page_cache.flush_all t.page_cache
 
 let load str =
   let fd = openfile ~mode:[O_RDWR;O_CREAT] str in
   let stat = Core_unix.fstat fd in
-  if Int64.equal stat.st_size 0L then prefill fd;
   let page_cache = Page_cache.create fd ~size:256 in
-  Page_cache.with_page page_cache Pageno.zero (fun pg0 ->
-    let buf0 = Page.underlying pg0 in
-    let pgtbl_num_entries = num_entries buf0 in
-    let page_tbl = Int.Table.create () in
-    (* TODO: this assumes that the page table can fit on a single page! fix this in the future. *)
-    (for i = 0 to pgtbl_num_entries - 1 do
-      let (~k:key,~v:pageno) = get_entry buf0 i in
-      Hashtbl.set page_tbl ~key ~data:(Pageno.of_int pageno)
-    done);
-    let page_allocator = Page_allocator.create fd in
-    {
-      fd;
-      page_tbl;
-      page_cache;
-      page_allocator
-    }
-  )
+  let page_allocator = Page_allocator.create fd in
+  let bptree =
+    if Int64.equal stat.st_size Int64.zero then begin
+      let _metadata_page = Page_allocator.allocate_page page_allocator in
+      let bptree = Bplustree.create page_cache page_allocator in
+      let root_pageno = Bplustree.root bptree in
+      Metadata.write_root_pageno page_cache root_pageno;
+      bptree
+    end else begin
+      let root_pageno = Metadata.read_root_pageno page_cache in
+      Bplustree.load page_cache page_allocator root_pageno
+    end
+  in
+  {fd;bptree;page_cache;page_allocator; latest_root_pageno = Bplustree.root bptree}
 
 let get t k =
-  match Hashtbl.find t.page_tbl k  with
+  match Bplustree.lookup t.bptree k with
   | None -> None
   | Some pageno ->
     Page_cache.with_page t.page_cache pageno (fun pg ->
       let buf = Page.underlying_read_only pg in
-      match seek k buf with
-      | None -> failwith "Impossible --- if there's a pageno entry, it should be on that page"
-      | Some i -> let (~k:_,~v) = get_entry buf i in Some v
+      Some (Off_heap_buffer.to_bytes buf) [@nontail]
     )
+    
 
-let put t ~k ~v =
-  match Hashtbl.find t.page_tbl k  with
-  | None ->
-    Page_cache.with_page t.page_cache (Page_allocator.last_pageno t.page_allocator) (
-      fun last_pg ->
-        let buf = Page.underlying last_pg in
-        if num_entries buf < max_num_entries then
-          let i = num_entries buf in
-          Hashtbl.set t.page_tbl ~key:k ~data:(Page_allocator.last_pageno t.page_allocator);
-          set_entry buf i ~k ~v;
-          incr_num_entries buf; ()
-        else
-          let pageno = Page_allocator.allocate_page t.page_allocator in
-          Page_cache.with_page t.page_cache pageno (fun pg ->
-            let buf = Page.underlying pg in
-            Hashtbl.set t.page_tbl ~key:k ~data:(Page.pageno pg);
-            set_entry buf 0 ~k ~v;
-            incr_num_entries buf; ()
-          )
-    )
-  | Some pageno ->
-      Page_cache.with_page t.page_cache pageno (fun pg ->
-        let buf = Page.underlying pg in
-        let (Some i) = seek k buf in
-        set_entry buf i ~k ~v; ()
-      )
-      
+let put t k v =
+  assert (Bytes.length v <= Page.page_size);
+  let pageno =
+    match Bplustree.lookup t.bptree k with
+    | Some pageno -> pageno
+    | None ->
+      let pageno = Page_allocator.allocate_page t.page_allocator in
+      Bplustree.insert t.bptree k pageno;
+      flush_metadata_if_new_root t;
+      pageno
+  in
+  Page_cache.with_page t.page_cache pageno (fun page ->
+    let buf = Page.underlying page in
+    Off_heap_buffer.blit_from_bytes buf v [@nontail]
+  );

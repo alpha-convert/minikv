@@ -29,7 +29,7 @@ let test_differential_insert_lookup () =
     let table = Int.Table.create () in
 
     List.iter ops ~f:(fun (key, value) ->
-      Bplustree.insert bptree ~key ~value;
+      Bplustree.insert bptree key value;
       Hashtbl.set table ~key ~data:value;
     );
 

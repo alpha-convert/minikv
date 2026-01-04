@@ -1,6 +1,8 @@
+open! Core
+
 type t
 
 val load : string -> t
-
-val get : t -> int -> int option
-val put : t -> k:int -> v:int -> unit
+val flush : t -> unit
+val get : t -> int -> Bytes.t option
+val put : t -> int -> Bytes.t -> unit

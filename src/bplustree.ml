@@ -343,7 +343,7 @@ let lookup t key =
     let leaf = Header.as_leaf page in
     Leaf.lookup_key leaf key [@nontail])
 
-let insert t ~key ~value =
+let insert t key value =
   let {root;cache;allocator} = t in
   let rec insert_into_node pageno =
     (* First, determine if this is an internal or leaf node and get child pageno if internal *)
