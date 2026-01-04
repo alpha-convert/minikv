@@ -11,7 +11,7 @@ module T : sig
       Generator.list_with_length ~length:500000
       (Generator.both
          (Generator.int_uniform_inclusive 1 10000)
-         (Generator.map ~f:Pageno.of_int (Generator.int_uniform_inclusive 1 1000000)))
+         (Generator.map ~f:Pageno.of_int_exn (Generator.int_uniform_inclusive 1 1000000)))
   end
 
 let test_differential_insert_lookup () =
@@ -32,7 +32,7 @@ let test_differential_insert_lookup () =
 
     Hashtbl.iteri table ~f:(fun ~key ~data ->
       Bplustree.seek cursor key;
-      match Bplustree.get cursor with
+      match%optional.Or_null Bplustree.get cursor with
       | None ->
           failwith (sprintf "Key %d not found in B+ tree but present in table" key)
       | Some found_value ->

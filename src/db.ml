@@ -58,20 +58,19 @@ let load str =
   in
   {fd;bptree;cache;allocator; latest_root_pageno = Bplustree.root bptree}
 
-let get t k =
+let get t k : Bytes.t Or_null.t =
   let cursor = Bplustree.create_cursor t.bptree k in
-  match Bplustree.get cursor with
-  | None -> None
-  | Some pageno ->
+  Or_null.map (Bplustree.get cursor) ~f:(fun pageno ->
     Page_cache.with_page t.cache pageno (fun pg ->
       let buf = Page.underlying_read_only pg in
-      Some (Off_heap_buffer.to_bytes buf))
+      (Off_heap_buffer.to_bytes buf [@nontail])))
+    
     
 let put t k v =
   assert (Bytes.length v <= Page.page_size);
   let cursor = Bplustree.create_cursor t.bptree k in
   let pageno =
-    match Bplustree.get cursor with
+    match%optional.Or_null Bplustree.get cursor with
     | Some pageno -> pageno
     | None ->
       let pageno = Page_allocator.allocate_page t.allocator in

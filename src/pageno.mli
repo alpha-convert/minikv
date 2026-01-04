@@ -1,5 +1,5 @@
 open! Core
-type t [@@deriving sexp, compare, hash, quickcheck]
+type t : value mod everything [@@deriving sexp, compare, hash, quickcheck]
 
 val to_int : t -> int
 val of_int_exn : int -> t

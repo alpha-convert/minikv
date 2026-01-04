@@ -229,7 +229,7 @@ end
 and Leaf : sig
   type t
   val init : Page.t @ local -> parent:Pageno.t Or_null.t -> t @ local
-  val lookup_key : t @ local -> int -> Pageno.t option
+  val lookup_key : t @ local -> int -> Pageno.t Or_null.t
   val insert : t @ local -> key:int -> value:Pageno.t -> Page_cache.t -> Page_allocator.t -> SplitResult.t
 end = struct
   (* Leaf node layout:
@@ -304,9 +304,9 @@ end = struct
 
   let lookup_key (t @ local) k =
     match find_key_pos t k with
-    | `Not_found _ -> None
-    | `Found_exact (~idx:_,pageno) -> Some pageno
-    | `Found_other _ -> None
+    | `Not_found _ -> Null
+    | `Found_exact (~idx:_,pageno) -> This pageno
+    | `Found_other _ -> Null
 
   (* Insert key-value pair into leaf at given position, assumes not full and key doesn't exist *)
   let insert_with_space t ~idx ~key ~value =
