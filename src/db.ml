@@ -4,8 +4,8 @@ open! Core_unix
 type t = {
   fd : File_descr.t;
   bptree : Bplustree.t;
-  page_cache : Page_cache.t;
-  page_allocator : Page_allocator.t;
+  cache : Page_cache.t;
+  allocator : Page_allocator.t;
   mutable latest_root_pageno : Pageno.t;
 }
 
@@ -33,37 +33,36 @@ let flush_metadata_if_new_root t =
   let root_pageno = Bplustree.root t.bptree in
   if not (Pageno.equal root_pageno t.latest_root_pageno) then (
     t.latest_root_pageno <- root_pageno;
-    Metadata.write_root_pageno t.page_cache root_pageno
+    Metadata.write_root_pageno t.cache root_pageno
   )
 
 let flush t =
   flush_metadata_if_new_root t;
-  Page_cache.flush_all t.page_cache
+  Page_cache.flush_all t.cache
 
 let load str =
   let fd = openfile ~mode:[O_RDWR;O_CREAT] str in
   let stat = Core_unix.fstat fd in
-  let page_cache = Page_cache.create fd ~size:256 in
-  let page_allocator = Page_allocator.create fd in
+  let cache = Page_cache.create fd ~size:256 in
+  let allocator = Page_allocator.create fd in
   let bptree =
     if Int64.equal stat.st_size Int64.zero then begin
-      let _metadata_page = Page_allocator.allocate_page page_allocator in
-      let bptree = Bplustree.create page_cache page_allocator in
-      let root_pageno = Bplustree.root bptree in
-      Metadata.write_root_pageno page_cache root_pageno;
+      let _metadata_page = Page_allocator.allocate_page allocator in
+      let bptree = Bplustree.create cache allocator in
+      Metadata.write_root_pageno cache (Bplustree.root bptree);
       bptree
     end else begin
-      let root_pageno = Metadata.read_root_pageno page_cache in
-      Bplustree.load page_cache page_allocator root_pageno
+      let root_pageno = Metadata.read_root_pageno cache in
+      Bplustree.load cache allocator root_pageno
     end
   in
-  {fd;bptree;page_cache;page_allocator; latest_root_pageno = Bplustree.root bptree}
+  {fd;bptree;cache;allocator; latest_root_pageno = Bplustree.root bptree}
 
 let get t k =
   match Bplustree.lookup t.bptree k with
   | None -> None
   | Some pageno ->
-    Page_cache.with_page t.page_cache pageno (fun pg ->
+    Page_cache.with_page t.cache pageno (fun pg ->
       let buf = Page.underlying_read_only pg in
       Some (Off_heap_buffer.to_bytes buf) [@nontail]
     )
@@ -75,12 +74,12 @@ let put t k v =
     match Bplustree.lookup t.bptree k with
     | Some pageno -> pageno
     | None ->
-      let pageno = Page_allocator.allocate_page t.page_allocator in
+      let pageno = Page_allocator.allocate_page t.allocator in
       Bplustree.insert t.bptree k pageno;
       flush_metadata_if_new_root t;
       pageno
   in
-  Page_cache.with_page t.page_cache pageno (fun page ->
+  Page_cache.with_page t.cache pageno (fun page ->
     let buf = Page.underlying page in
     Off_heap_buffer.blit_from_bytes buf v [@nontail]
   );
