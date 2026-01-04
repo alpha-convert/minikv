@@ -1,23 +1,25 @@
+open! Stdlib_stable
 open! Core
 open! Core_unix
 
-type slot = {
-  mutable in_use : bool;
-  mutable pg : Page.t;
-  mutable seqno : int
+type slot = #{
+  pg : Page.t;
+  in_use : bool;
+  seqno : int
 }
 
 let compare_seqno s s' =
   (* Prefer clean pages over dirty pages for eviction *)
-  match (Page.is_dirty s.pg, Page.is_dirty s'.pg) with
+  match (Page.is_dirty s.#pg, Page.is_dirty s'.#pg) with
   | (false, true) -> -1
   | (true, false) -> 1
-  | _ -> Int.compare s.seqno s'.seqno
+  | _ -> Int.compare s.#seqno s'.#seqno
 
 type t =
   {
     fd : File_descr.t;
-    slots : slot Uniform_array.t;
+    slots : slot array;
+    size : int;
     mutable latest_seqno : int;
     pageno_to_slot : (Pageno.t, int) Hashtbl.t
   }
@@ -28,50 +30,65 @@ let next_seqno t =
   a
 
 let flush_all t =
-  Uniform_array.iter t.slots ~f:(function {pg;_} -> Page.flush pg)
+  for i = 0 to t.size - 1 do
+    let slot = t.slots.(i) in
+    (* don't flush pages that don't actually correspond to anything yet *)
+    if slot.#seqno < 0 then ()
+    else
+      Page.flush slot.#pg
+  done
 
 let create fd ~size =
   let dummy_slot _ =
     let dummy_pg = Page.create fd (Pageno.of_int_exn Int.max_value) in
-    { in_use = false; pg = dummy_pg; seqno = -1 }
+    #{ in_use = false; pg = dummy_pg; seqno = -1 }
   in
+  (* This is among the most horrifying hacks i've ever pulled. *)
+  let slots : slot array = Obj.magic Obj.magic (Array.create ~len:(3 * size) 0) in
+  for i = 0 to size - 1 do
+    slots.(i) <- dummy_slot ();
+  done;
   {
     fd;
-    slots = Uniform_array.init size ~f:dummy_slot ;
+    slots; 
+    size;
     latest_seqno = 0;
     pageno_to_slot = Hashtbl.create (module Pageno)
   }
 
 let evict t =
-  let res =
-    Uniform_array.foldi t.slots ~init:None ~f:(fun i best slot ->
-    if slot.in_use then best
-    else
-      match best with
-      | None -> Some (i, slot)
-      | Some (_, best_slot) ->
-          if compare_seqno slot best_slot < 0
-          then Some (i,slot)
-          else best)
-  in
-  let (idx,slot) = Option.value_exn res ~message:"No available slots." in
-  let old_pageno = Page.pageno slot.pg in
+  let mutable best_idx = -1 in
+  for i = 0 to t.size - 1 do
+    let slot = t.slots.(i) in
+    if not slot.#in_use then
+      if best_idx < 0 then best_idx <- i
+      else
+        let best = t.slots.(best_idx) in
+        if compare_seqno slot best < 0 then best_idx <- i
+  done;
+  if best_idx < 0 then failwith "No slots availble";
+  let slot = t.slots.(best_idx) in
+  let old_pageno = Page.pageno slot.#pg in
   Hashtbl.remove t.pageno_to_slot old_pageno;
-  Page.flush slot.pg;
-  (idx,slot)
+  Page.flush slot.#pg;
+  best_idx
 
 let with_page t ?(force_flush = false) pageno f =
-  let slot =
+  let slot_idx =
     match Hashtbl.find t.pageno_to_slot pageno with
-    | Some slot_idx -> Uniform_array.get t.slots slot_idx
-    | None -> let (i,slot) = evict t in
-               Page.load slot.pg pageno;
-               Hashtbl.set t.pageno_to_slot ~key:pageno ~data:i;
-               slot
+    | Some slot_idx -> (.(slot_idx))
+    | None -> let slot_idx = evict t in
+              let slot = t.slots.(slot_idx) in
+               Page.load slot.#pg pageno;
+               Hashtbl.set t.pageno_to_slot ~key:pageno ~data:slot_idx;
+               (.(slot_idx))
   in
-  slot.seqno <- next_seqno t;
-  slot.in_use <- true;
-  let res = f slot.pg in
-  slot.in_use <- false;
-  if force_flush then Page.flush slot.pg;
+  let pg = (Idx_mut.unsafe_get t.slots slot_idx).#pg  in
+  let slot_seqno = (.idx_mut(slot_idx).#seqno) in
+  let slot_in_use = (.idx_mut(slot_idx).#in_use) in
+  Idx_mut.unsafe_set t.slots slot_seqno (next_seqno t);
+  Idx_mut.unsafe_set t.slots slot_in_use true; 
+  let res = f pg in
+  Idx_mut.unsafe_set t.slots slot_in_use false; 
+  if force_flush then Page.flush pg;
   res
