@@ -73,7 +73,7 @@ let evict t =
   Page.flush slot.#pg;
   best_idx
 
-let with_page t ?(force_flush = false) pageno f =
+let with_page t pageno f =
   let slot_idx =
     match Hashtbl.find t.pageno_to_slot pageno with
     | Some slot_idx -> (.(slot_idx))
@@ -90,5 +90,4 @@ let with_page t ?(force_flush = false) pageno f =
   Idx_mut.unsafe_set t.slots slot_in_use true; 
   let res = f pg in
   Idx_mut.unsafe_set t.slots slot_in_use false; 
-  if force_flush then Page.flush pg;
   res
