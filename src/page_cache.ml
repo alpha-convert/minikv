@@ -32,7 +32,7 @@ let flush_all t =
 
 let create fd ~size =
   let dummy_slot _ =
-    let dummy_pg = Page.create fd (Pageno.of_int (-1)) in
+    let dummy_pg = Page.create fd (Pageno.of_int_exn Int.max_value) in
     { in_use = false; pg = dummy_pg; seqno = -1 }
   in
   {

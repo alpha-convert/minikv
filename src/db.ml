@@ -13,13 +13,13 @@ type t = {
    - offset 0: root_pageno (64-bit little endian)
    - rest: reserved for future metadata *)
 module Metadata = struct
-  let metadata_pageno = Pageno.of_int 0
+  let metadata_pageno = Pageno.of_int_exn 0
   let root_pageno_offset = 0
 
   let read_root_pageno page_cache =
     Page_cache.with_page page_cache metadata_pageno (fun page ->
       let buf = Page.underlying_read_only page in
-      Pageno.of_int (Off_heap_buffer.unsafe_get_int64_le_exn buf ~pos:root_pageno_offset)
+      Pageno.of_int_exn (Off_heap_buffer.unsafe_get_int64_le_exn buf ~pos:root_pageno_offset)
     )
 
   let write_root_pageno page_cache root_pageno =
