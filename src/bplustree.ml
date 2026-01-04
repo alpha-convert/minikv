@@ -5,7 +5,13 @@ module SplitResult = struct
   type t = NoSplit | Split of (int * Pageno.t)
 end
 
-module Header = struct
+module rec Header : sig
+  type t = Internal | Leaf
+  val to_int : t -> int
+  val of_int : int -> t
+  val classify : Page.t @ local -> (Internal.t,Leaf.t) Either.t @ local
+end
+  = struct
   type t =
     | Internal
     | Leaf
@@ -13,19 +19,26 @@ module Header = struct
   let to_int (h : t) : int = Obj.magic h
   let of_int (i : int) : t = Obj.magic i
 
-  let classify (page @ local) @ local = exclave_
+let as_leaf (page : Page.t @ local) : Leaf.t @ local = exclave_ (Obj.magic page)
+let as_internal (page : Page.t @ local) : Internal.t @ local = exclave_ (Obj.magic page)
+
+  let classify (page @ local) : (Internal.t,Leaf.t) Either.t @ local = exclave_
     let buf = Page.underlying_read_only page in
     let header_byte = Off_heap_buffer.unsafe_get_int8 buf ~pos:0 in
     match of_int header_byte with
-    | Internal -> Either.First page
-    | Leaf -> Either.Second page
-
-  let as_leaf (page @ local) @ local = exclave_ page
-  let as_internal (page @ local) @ local = exclave_ page
+    | Internal -> Either.First (as_internal page)
+    | Leaf -> Either.Second (as_leaf page)
 end
 
-
-module Internal = struct
+and Internal : sig
+  type t
+  val init : Page.t @ local -> t @ local
+  val set_child : t @ local -> int -> Pageno.t -> unit
+  val set_key : t @ local -> int -> int -> unit
+  val set_num_keys : t @ local -> int -> unit
+  val lookup_key : t @ local -> int -> Pageno.t
+  val insert : t @ local -> key:int -> right_child:Pageno.t -> Page_cache.t -> Page_allocator.t -> SplitResult.t
+end = struct
   (* Internal node layout:
      - header: 8-bit node type
      - num_keys: 16-bit little endian
@@ -68,10 +81,10 @@ module Internal = struct
     let pos = tbl_start + (i * 16) + 8 in
     (Off_heap_buffer.unsafe_set_int64_le_exn buf ~pos key [@nontail])
 
-  let set_child t i pageno =
+  let set_child (t @ local) i pageno =
     let buf = Page.underlying t in
     let pos = tbl_start + (i * 16) in
-    (Off_heap_buffer.unsafe_set_int64_le_exn buf ~pos (Pageno.to_int pageno) [@nontail])
+    Off_heap_buffer.unsafe_set_int64_le_exn buf ~pos (Pageno.to_int pageno) [@nontail]
 
   let lookup_key (t @ local) k =
     let buf = Page.underlying_read_only t in
@@ -93,8 +106,9 @@ module Internal = struct
 
   let init page =
     let buf = Page.underlying page in
-    (Off_heap_buffer.unsafe_set_int8_exn buf ~pos:0 (Header.to_int Header.Internal) [@nontail]);
-    (Off_heap_buffer.unsafe_set_int16_le_exn buf ~pos:1 0 [@nontail])   (* num_keys = 0 *)
+    (Off_heap_buffer.unsafe_set_int8_exn buf ~pos:0 (Header.to_int Header.Internal));
+    (Off_heap_buffer.unsafe_set_int16_le_exn buf ~pos:1 0);
+    exclave_ page
 
   (* Insert a key and right child into internal node, assumes not full *)
   let insert_with_space t ~key ~right_child =
@@ -141,14 +155,14 @@ module Internal = struct
     (* Create new right node and write right half *)
     let right_pageno = Page_allocator.allocate_page allocator in
     Page_cache.with_page page_cache right_pageno (fun right_page ->
-      init right_page;
+      let right_page = init right_page in
       set_child right_page 0 mid_right_child;
       for i = mid + 1 to max_keys do
         let (k, child) = entries.(i) in
         set_key right_page (i - mid - 1) k;
         set_child right_page (i - mid) child
       done;
-      set_num_keys right_page (max_keys - mid)
+      set_num_keys right_page (max_keys - mid) [@nontail]
     );
 
     (promoted_key, right_pageno)
@@ -162,7 +176,12 @@ module Internal = struct
 
 end
 
-module Leaf = struct
+and Leaf : sig
+  type t
+  val init : Page.t @ local -> t @ local
+  val lookup_key : t @ local -> int -> Pageno.t option
+  val insert : t @ local -> key:int -> value:Pageno.t -> Page_cache.t -> Page_allocator.t -> SplitResult.t
+end = struct
   (* Leaf node layout:
      - header: 8-bit node type
      - num_keys: 16-bit little endian
@@ -200,10 +219,12 @@ module Leaf = struct
     (Off_heap_buffer.unsafe_set_int64_le_exn buf ~pos key [@nontail]);
     (Off_heap_buffer.unsafe_set_int64_le_exn buf ~pos:(pos + 8) (Pageno.to_int pointer) [@nontail])
    
-  let init page =
+  let init (page @ local) : t @ local =
     let buf = Page.underlying page in
-    (Off_heap_buffer.unsafe_set_int8_exn buf ~pos:0 (Header.to_int Header.Leaf) [@nontail]);
-    (Off_heap_buffer.unsafe_set_int16_le_exn buf ~pos:1 0 [@nontail])
+    (Off_heap_buffer.unsafe_set_int8_exn buf ~pos:0 (Header.to_int Header.Leaf));
+    (Off_heap_buffer.unsafe_set_int16_le_exn buf ~pos:1 0);
+    exclave_ page
+
 
   (* Binary search to find the position where key should be inserted.
      Returns the index where key is found or should be inserted. *)
@@ -272,12 +293,12 @@ module Leaf = struct
     (* Create new page and write right half *)
     let right_pageno = Page_allocator.allocate_page allocator in
     Page_cache.with_page page_cache right_pageno (fun right_page ->
-      init right_page;
+      let right_page = init right_page in
       for i = mid to max_keys do
         let (k, v) = entries.(i) in
         set_entry right_page (i - mid) ~key:k ~pointer:v
       done;
-      set_num_keys right_page (max_keys + 1 - mid)
+      set_num_keys right_page (max_keys + 1 - mid) [@nontail]
     );
 
     (pivot_key, right_pageno)
@@ -311,14 +332,15 @@ let load cache allocator root =
 let create cache allocator =
   let leaf_pageno = Page_allocator.allocate_page allocator in
   let root_pageno = Page_allocator.allocate_page allocator in
-  Page_cache.with_page cache leaf_pageno Leaf.init;
+  Page_cache.with_page cache leaf_pageno (fun page -> ignore (Leaf.init page));
   Page_cache.with_page cache root_pageno (fun page ->
-    Internal.init page;
-    Internal.set_child page 0 leaf_pageno
+    let page = Internal.init page in
+    Internal.set_child page 0 leaf_pageno [@nontail]
   );
   {root = root_pageno;cache;allocator}
 
-let lookup_leaf_page root cache key =
+let lookup t key =
+  let {root;cache;allocator} = t in
   let rec loop pageno =
     let next =
       Page_cache.with_page cache pageno (fun page ->
@@ -326,8 +348,7 @@ let lookup_leaf_page root cache key =
         | Either.First node ->
             let next_pageno = Internal.lookup_key node key in
             `Continue next_pageno
-        | Either.Second _ ->
-            `Done pageno
+        | Either.Second leaf -> `Done (Leaf.lookup_key leaf key)
       )
     in
     match next with
@@ -336,25 +357,16 @@ let lookup_leaf_page root cache key =
   in
   loop root
 
-let lookup t key =
-  let {root;cache;allocator} = t in
-  let leaf_pageno = lookup_leaf_page root cache key in
-  Page_cache.with_page cache leaf_pageno (fun page ->
-    let leaf = Header.as_leaf page in
-    Leaf.lookup_key leaf key [@nontail])
-
 let insert t key value =
   let {root;cache;allocator} = t in
   let rec insert_into_node pageno =
-    (* First, determine if this is an internal or leaf node and get child pageno if internal *)
     let next_step =
       Page_cache.with_page cache pageno (fun page ->
         match Header.classify page with
-        | Either.First internal_node ->
-            let child_pageno = Internal.lookup_key internal_node key in
-            `Internal child_pageno
-        | Either.Second _ ->
-            `Leaf (Leaf.insert (Header.as_leaf page) ~key ~value cache allocator [@nontail])
+        | Either.First internal ->
+            `Internal (Internal.lookup_key internal key)
+        | Either.Second leaf ->
+            `Leaf (Leaf.insert leaf ~key ~value cache allocator [@nontail])
       )
     in
     match next_step with
@@ -364,7 +376,9 @@ let insert t key value =
         | NoSplit -> NoSplit
         | Split (pivot, right_child) ->
             Page_cache.with_page cache pageno (fun page ->
-              Internal.insert (Header.as_internal page) ~key:pivot ~right_child cache allocator [@nontail]
+              match Header.classify page with
+              | Either.First internal -> Internal.insert internal ~key:pivot ~right_child cache allocator [@nontail]
+              | Either.Second _ -> assert false
             ))
   in
 
@@ -375,11 +389,11 @@ let insert t key value =
         (* Root split: create new root with two children *)
         let new_root_pageno = Page_allocator.allocate_page allocator in
         Page_cache.with_page cache new_root_pageno (fun new_root ->
-          Internal.init new_root;
+          let new_root = Internal.init new_root in
           Internal.set_child new_root 0 root;
           Internal.set_key new_root 0 pivot;
           Internal.set_child new_root 1 right_pageno;
-          Internal.set_num_keys new_root 1
+          Internal.set_num_keys new_root 1 [@nontail]
         );
         new_root_pageno
   in

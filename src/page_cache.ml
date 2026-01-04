@@ -17,7 +17,7 @@ let compare_seqno s s' =
 type t =
   {
     fd : File_descr.t;
-    slots : slot Array.t;
+    slots : slot Uniform_array.t;
     mutable latest_seqno : int;
     pageno_to_slot : (Pageno.t, int) Hashtbl.t
   }
@@ -28,7 +28,7 @@ let next_seqno t =
   a
 
 let flush_all t =
-  Array.iter t.slots ~f:(function {pg;_} -> Page.flush pg)
+  Uniform_array.iter t.slots ~f:(function {pg;_} -> Page.flush pg)
 
 let create fd ~size =
   let dummy_slot _ =
@@ -37,14 +37,14 @@ let create fd ~size =
   in
   {
     fd;
-    slots = Array.init size ~f:dummy_slot ;
+    slots = Uniform_array.init size ~f:dummy_slot ;
     latest_seqno = 0;
     pageno_to_slot = Hashtbl.create (module Pageno)
   }
 
 let evict t =
   let res =
-    Array.foldi t.slots ~init:None ~f:(fun i best slot ->
+    Uniform_array.foldi t.slots ~init:None ~f:(fun i best slot ->
     if slot.in_use then best
     else
       match best with
@@ -63,7 +63,7 @@ let evict t =
 let with_page t ?(force_flush = false) pageno f =
   let slot =
     match Hashtbl.find t.pageno_to_slot pageno with
-    | Some slot_idx -> t.slots.(slot_idx)
+    | Some slot_idx -> Uniform_array.get t.slots slot_idx
     | None -> let (i,slot) = evict t in
                Page.load slot.pg pageno;
                Hashtbl.set t.pageno_to_slot ~key:pageno ~data:i;

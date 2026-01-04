@@ -1,6 +1,5 @@
 type t [@@deriving sexp, compare, hash, quickcheck]
 
-val zero : t
 val to_int : t -> int
 val of_int : int -> t
 val equal : t -> t -> bool
