@@ -3,39 +3,36 @@ open! Core_unix
 open! Base_quickcheck
 open! Minikv
 
-let test_differential_insert_lookup () =
-
-  let module T : sig
-    type t = (int * Pageno.t) list [@@deriving sexp_of, quickcheck]
-  end= struct
+module T : sig
+    type t = (int * Pageno.t) list [@@deriving sexp, quickcheck]
+  end = struct
     type t = (int * Pageno.t) list [@@deriving sexp, quickcheck]
     let quickcheck_generator =
       Generator.list_with_length ~length:500000
       (Generator.both
          (Generator.int_uniform_inclusive 1 10000)
          (Generator.map ~f:Pageno.of_int (Generator.int_uniform_inclusive 1 1000000)))
-  end in
+  end
 
-  (* Run the test *)
-  Test.run_exn ~config:{Test.default_config with test_count=1} (module T) ~f:(fun ops ->
-    (* Set up B+ tree *)
+let test_differential_insert_lookup () =
+  Test.run_exn ~config:{Test.default_config with test_count=5} (module T) ~f:(fun ops ->
     let (_, fd) = mkstemp "bptree_test" in
-    let page_cache = Page_cache.create fd ~size:4 in
+    let page_cache = Page_cache.create fd ~size:256 in
     let allocator = Page_allocator.create fd in
     
-    (* Initialize root as empty internal *)
     let bptree = Bplustree.create page_cache allocator in
-
     let table = Int.Table.create () in
+    let cursor = Bplustree.create_cursor bptree 0 in
 
     List.iter ops ~f:(fun (key, value) ->
-      Bplustree.insert bptree key value;
+      Bplustree.seek cursor key;
+      Bplustree.set cursor value;
       Hashtbl.set table ~key ~data:value;
     );
 
-    (* Verify all keys *)
     Hashtbl.iteri table ~f:(fun ~key ~data ->
-      match Bplustree.lookup bptree key with
+      Bplustree.seek cursor key;
+      match Bplustree.get cursor with
       | None ->
           failwith (sprintf "Key %d not found in B+ tree but present in table" key)
       | Some found_value ->
