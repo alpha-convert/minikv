@@ -12,6 +12,9 @@ module rec Header : sig
   val get_parent : Page.t @ local -> Pageno.t Or_null.t
   val set_parent : Page.t @ local -> Pageno.t -> unit
 
+  val leaf_exn : Page.t @ local -> Leaf.t @ local
+  val internal_exn : Page.t @ local -> Internal.t @ local
+
   (* Layout constants *)
   val nodety_offset : int
   val parent_offset : int
@@ -45,12 +48,24 @@ end
   let as_leaf (page : Page.t @ local) : Leaf.t @ local = exclave_ (Obj.magic page)
   let as_internal (page : Page.t @ local) : Internal.t @ local = exclave_ (Obj.magic page)
 
+   
+
   let classify (page @ local) : (Internal.t,Leaf.t) Either.t @ local = exclave_
     let buf = Page.underlying_read_only page in
     let header_byte = Off_heap_buffer.unsafe_get_int8 buf ~pos:nodety_offset in
     match nodety_of_int header_byte with
     | Internal -> Either.First (as_internal page)
     | Leaf -> Either.Second (as_leaf page)
+
+  let leaf_exn (page @ local) @ local = exclave_
+    match classify page with
+    | Second leaf -> leaf
+    | First _ -> assert false
+
+ let internal_exn (page @ local) @ local = exclave_
+    match classify page with
+    | First internal -> internal
+    | Second leaf -> assert false
   
 end
 
@@ -64,8 +79,7 @@ and Internal : sig
   val insert : t @ local -> key:int -> right_child:Pageno.t -> Page_cache.t -> Page_allocator.t -> SplitResult.t
 end = struct
   (* Internal node layout:
-     - header: 8-bit node type, 64 bit parent pointer
-     - num_keys: 16-bit little endian
+     - header: 8-bit node type, 64 bit parent pointer, num_keys: 16-bit little endian
      - data: pageno, key, pageno, key, ..., pageno
        where pageno and key are both 64-bit little endian
      - keys are sorted in increasing order *)
@@ -197,8 +211,7 @@ end = struct
         set_key right_page (i - mid - 1) k;
         set_child right_page (i - mid) c
       done;
-      set_num_keys right_page (max_keys - mid) [@nontail]
-    );
+      set_num_keys right_page (max_keys - mid) [@nontail]);
 
     (* Update left node with entries [0..mid-1] *)
     (* We need to move entries if insert_pos < mid *)
@@ -228,19 +241,23 @@ end
 
 and Leaf : sig
   type t
-  val init : Page.t @ local -> parent:Pageno.t Or_null.t -> t @ local
+  val init : Page.t @ local -> parent:Pageno.t Or_null.t -> left:Pageno.t Or_null.t -> right:Pageno.t Or_null.t -> t @ local
   val lookup_key : t @ local -> int -> Pageno.t Or_null.t
   val insert : t @ local -> key:int -> value:Pageno.t -> Page_cache.t -> Page_allocator.t -> SplitResult.t
+  val num_keys : t @ local -> int
+  val get_sibs : t @ local -> #(left:Pageno.t Or_null.t * right:Pageno.t Or_null.t)
 end = struct
   (* Leaf node layout:
-     - header: 8-bit node type, 64 bit parent pointer
-     - num_keys: 16-bit little endian
+     - header: 8-bit node type, 64 bit parent pointer, num_keys: 16-bit little endian
+     - left_sib: 64 bit pageno
+     - right_sib: 64 bit pageno
      - entries: (key, pageno) pairs (each 16 bytes: 8-byte key + 8-byte pageno)
        stored sequentially, sorted *)
   type t = Page.t
 
-  let entries_start = 11  (* 1 byte header + 8 bytes parent + 2 bytes num_keys *)
-
+  let entries_start = 27  (* 1 byte header + 8 bytes parent + 2 bytes num_keys + 16 bytes siblings *)
+  let left_sib_offset = 11
+  let right_sib_offset = 19
   let entry_size = 16
   let key_size = 8
   let pageno_size = 8
@@ -254,6 +271,22 @@ end = struct
   let set_num_keys t n =
     let buf = Page.underlying t in
     (Off_heap_buffer.unsafe_set_int16_le_exn buf ~pos:Header.num_keys_offset n [@nontail])
+  
+  let get_sibs t =
+    let buf = Page.underlying_read_only t in
+    let left = Pageno.of_int (Off_heap_buffer.unsafe_get_int64_le_exn buf ~pos:left_sib_offset) in
+    let right = Pageno.of_int (Off_heap_buffer.unsafe_get_int64_le_exn buf ~pos:right_sib_offset) in
+    #(~left,~right)
+  
+  let set_left_sib (t @ local) left =
+    let buf = Page.underlying t in
+    let left_sib_i = match%optional.Or_null left with None -> Header.null_pageno_val | Some p -> Pageno.to_int p in
+    Off_heap_buffer.unsafe_set_int64_le_exn buf ~pos:left_sib_offset left_sib_i [@nontail]
+
+  let set_right_sib (t @ local) right =
+    let buf = Page.underlying t in
+    let right_sib_i = match%optional.Or_null right with None -> Header.null_pageno_val | Some p -> Pageno.to_int p in
+    Off_heap_buffer.unsafe_set_int64_le_exn buf ~pos:right_sib_offset right_sib_i [@nontail]
 
   let is_full t =
     num_keys t >= max_keys
@@ -271,13 +304,15 @@ end = struct
     (Off_heap_buffer.unsafe_set_int64_le_exn buf ~pos key [@nontail]);
     (Off_heap_buffer.unsafe_set_int64_le_exn buf ~pos:(pos + key_size) (Pageno.to_int pointer) [@nontail])
    
-  let init (page @ local) ~parent : t @ local =
+  let init (page @ local) ~parent ~left ~right : t @ local =
     let buf = Page.underlying page in
     (Off_heap_buffer.unsafe_set_int8_exn buf ~pos:Header.nodety_offset (Header.nodety_to_int Header.Leaf));
     let parent_int = match%optional.Or_null parent with
       | None -> Header.null_pageno_val
       | Some p -> Pageno.to_int p
     in
+    set_left_sib page left;
+    set_right_sib page right;
     (Off_heap_buffer.unsafe_set_int64_le_exn buf ~pos:Header.parent_offset parent_int);
     (Off_heap_buffer.unsafe_set_int16_le_exn buf ~pos:Header.num_keys_offset 0);
     exclave_ page
@@ -339,16 +374,24 @@ end = struct
     done;
     set_num_keys t mid;
 
+    let #(~left:_,~right:t_right) = get_sibs t in
     let right_pageno = Page_allocator.allocate_page allocator in
     Page_cache.with_page page_cache right_pageno (fun right_page_raw ->
       let parent = Header.get_parent t in
-      let right_page = init right_page_raw ~parent in
+      let right_page = init right_page_raw ~parent ~left:(This (Page.pageno t)) ~right:t_right in
       for i = mid to max_keys do
         let (k, v) = entries.(i) in
         set_entry right_page (i - mid) ~key:k ~pointer:v
       done;
       set_num_keys right_page (max_keys + 1 - mid) [@nontail]
     );
+    set_right_sib t (This right_pageno);
+
+    (match%optional.Or_null t_right with
+    | None -> ()
+    | Some old_right_pageno ->
+        Page_cache.with_page page_cache old_right_pageno (fun old_right ->
+          set_left_sib old_right (This right_pageno)));
 
     (pivot_key, right_pageno)
 
@@ -380,7 +423,7 @@ let create cache allocator =
   let leaf_pageno = Page_allocator.allocate_page allocator in
   let root_pageno = Page_allocator.allocate_page allocator in
   Page_cache.with_page cache leaf_pageno (fun page ->
-    ignore (Leaf.init page ~parent:(This root_pageno))
+    let (_ : Leaf.t) = Leaf.init page ~parent:(This root_pageno) ~left:Null ~right:Null in ()
   );
   Page_cache.with_page cache root_pageno (fun page ->
     let page = Internal.init page ~parent:Null in
@@ -411,28 +454,29 @@ let create_cursor t key =
 
 let get {leaf_pageno;key;t} =
   Page_cache.with_page t.cache leaf_pageno (fun page ->
-    match Header.classify page with
-    | Either.First _ -> assert false
-    | Either.Second leaf -> Leaf.lookup_key leaf key [@nontail])
+    let leaf = Header.leaf_exn page in
+    Leaf.lookup_key leaf key [@nontail])
 
-let set {leaf_pageno;key;t} value =
+let set cursor value =
+  let {leaf_pageno;key;t} = cursor in
   let {cache;allocator;_} = t in
-
   let split_result =
     Page_cache.with_page cache leaf_pageno (fun page ->
-      match Header.classify page with
-      | Either.First _ -> assert false
-      | Either.Second leaf -> Leaf.insert leaf ~key ~value cache allocator [@nontail])
+      let leaf = Header.leaf_exn page in
+      Leaf.insert leaf ~key ~value cache allocator [@nontail])
   in
 
+  (* After split, the cursor's key may now be in a the new leaf! *)
   match split_result with
   | SplitResult.NoSplit -> ()
   | SplitResult.Split (pivot, right_pageno) ->
+      if key >= pivot then
+        cursor.leaf_pageno <- right_pageno;
+
       let rec propagate_split current_pageno split_key split_right =
         Page_cache.with_page cache current_pageno (fun page ->
           match%optional.Or_null Header.get_parent page with
           | None ->
-              (* This is the root node w'ere splitting *)
               let new_root_pageno = Page_allocator.allocate_page allocator in
               Page_cache.with_page cache new_root_pageno (fun new_root ->
                 let new_root = Internal.init new_root ~parent:Null in
@@ -445,17 +489,15 @@ let set {leaf_pageno;key;t} value =
                 );
                 Page_cache.with_page cache split_right (fun child ->
                   Header.set_parent child new_root_pageno [@nontail]
-                ) 
+                )
               );
               t.root <- new_root_pageno
           | Some parent_pageno ->
               Page_cache.with_page cache parent_pageno (fun parent_page ->
-                match Header.classify parent_page with
-                | Either.First internal ->
-                    (match Internal.insert internal ~key:split_key ~right_child:split_right cache allocator with
-                    | SplitResult.NoSplit -> ()
-                    | SplitResult.Split (new_key, new_right) ->
-                        propagate_split parent_pageno new_key new_right)
-                | Either.Second _ -> assert false))
+                let parent_page = Header.internal_exn parent_page in
+                match Internal.insert parent_page ~key:split_key ~right_child:split_right cache allocator with
+                | SplitResult.NoSplit -> ()
+                | SplitResult.Split (new_key, new_right) ->
+                    propagate_split parent_pageno new_key new_right))
       in
       propagate_split leaf_pageno pivot right_pageno

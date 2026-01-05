@@ -25,16 +25,14 @@ module Metadata = struct
   let write_root_pageno page_cache root_pageno =
     Page_cache.with_page page_cache metadata_pageno (fun page ->
       let buf = Page.underlying page in
-      Off_heap_buffer.unsafe_set_int64_le_exn buf ~pos:root_pageno_offset (Pageno.to_int root_pageno) [@nontail]
-    )
+      Off_heap_buffer.unsafe_set_int64_le_exn buf ~pos:root_pageno_offset (Pageno.to_int root_pageno) [@nontail])
 end
 
 let flush_metadata_if_new_root t = 
   let root_pageno = Bplustree.root t.bptree in
   if not (Pageno.equal root_pageno t.latest_root_pageno) then (
     t.latest_root_pageno <- root_pageno;
-    Metadata.write_root_pageno t.cache root_pageno
-  )
+    Metadata.write_root_pageno t.cache root_pageno)
 
 let flush t =
   flush_metadata_if_new_root t;
@@ -62,9 +60,9 @@ let get t k : Bytes.t Or_null.t =
   let cursor = Bplustree.create_cursor t.bptree k in
   Or_null.map (Bplustree.get cursor) ~f:(fun pageno ->
     Page_cache.with_page t.cache pageno (fun pg ->
+      (* TODO: this reads back the whole buffer! we need to store lengths to read the proper amount out. *)
       let buf = Page.underlying_read_only pg in
-      (Off_heap_buffer.to_bytes buf [@nontail])))
-    
+      Off_heap_buffer.to_bytes buf [@nontail]))
     
 let put t k v =
   assert (Bytes.length v <= Page.page_size);
