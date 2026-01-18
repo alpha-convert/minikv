@@ -460,44 +460,41 @@ let get {leaf_pageno;key;t} =
 let set cursor value =
   let {leaf_pageno;key;t} = cursor in
   let {cache;allocator;_} = t in
+  let rec propagate_split current_pageno split_key split_right =
+    Page_cache.with_page cache current_pageno (fun page ->
+      match%optional.Or_null Header.get_parent page with
+      | None ->
+          let new_root_pageno = Page_allocator.allocate_page allocator in
+          Page_cache.with_page cache new_root_pageno (fun new_root ->
+            let new_root = Internal.init new_root ~parent:Null in
+            Internal.set_child new_root 0 current_pageno;
+            Internal.set_key new_root 0 split_key;
+            Internal.set_child new_root 1 split_right;
+            Internal.set_num_keys new_root 1;
+            Page_cache.with_page cache current_pageno (fun child ->
+              Header.set_parent child new_root_pageno
+            );
+            Page_cache.with_page cache split_right (fun child ->
+              Header.set_parent child new_root_pageno [@nontail]
+            )
+          );
+          t.root <- new_root_pageno
+      | Some parent_pageno ->
+          Page_cache.with_page cache parent_pageno (fun parent_page ->
+            let parent_page = Header.internal_exn parent_page in
+            match Internal.insert parent_page ~key:split_key ~right_child:split_right cache allocator with
+            | SplitResult.NoSplit -> ()
+            | SplitResult.Split (new_key, new_right) ->
+                propagate_split parent_pageno new_key new_right))
+  in
   let split_result =
     Page_cache.with_page cache leaf_pageno (fun page ->
       let leaf = Header.leaf_exn page in
       Leaf.insert leaf ~key ~value cache allocator [@nontail])
   in
-
-  (* After split, the cursor's key may now be in a the new leaf! *)
   match split_result with
   | SplitResult.NoSplit -> ()
   | SplitResult.Split (pivot, right_pageno) ->
-      if key >= pivot then
-        cursor.leaf_pageno <- right_pageno;
-
-      let rec propagate_split current_pageno split_key split_right =
-        Page_cache.with_page cache current_pageno (fun page ->
-          match%optional.Or_null Header.get_parent page with
-          | None ->
-              let new_root_pageno = Page_allocator.allocate_page allocator in
-              Page_cache.with_page cache new_root_pageno (fun new_root ->
-                let new_root = Internal.init new_root ~parent:Null in
-                Internal.set_child new_root 0 current_pageno;
-                Internal.set_key new_root 0 split_key;
-                Internal.set_child new_root 1 split_right;
-                Internal.set_num_keys new_root 1;
-                Page_cache.with_page cache current_pageno (fun child ->
-                  Header.set_parent child new_root_pageno
-                );
-                Page_cache.with_page cache split_right (fun child ->
-                  Header.set_parent child new_root_pageno [@nontail]
-                )
-              );
-              t.root <- new_root_pageno
-          | Some parent_pageno ->
-              Page_cache.with_page cache parent_pageno (fun parent_page ->
-                let parent_page = Header.internal_exn parent_page in
-                match Internal.insert parent_page ~key:split_key ~right_child:split_right cache allocator with
-                | SplitResult.NoSplit -> ()
-                | SplitResult.Split (new_key, new_right) ->
-                    propagate_split parent_pageno new_key new_right))
-      in
+      (* After split, the cursor's key may now be in a the new leaf! *)
+      if key >= pivot then cursor.leaf_pageno <- right_pageno;
       propagate_split leaf_pageno pivot right_pageno
