@@ -16,7 +16,7 @@ val unsafe_set_int16_le_exn : t @ local -> pos:int -> int -> unit
 val unsafe_set_int64_le_exn : t @ local -> pos:int -> int -> unit
 
 
-val to_bytes :  t @ local read -> Bytes.t
-val blit_from_bytes : t @ local -> Bytes.t -> unit
+val to_bytes :  t @ local read -> pos:int -> len:int -> Bytes.t
+val blit_from_bytes : t @ local -> Bytes.t -> src_pos:int -> dst_pos:int -> len:int -> unit
 val memset : t @ local -> pos:int -> len:int -> char -> unit
 

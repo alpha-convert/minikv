@@ -26,9 +26,9 @@ let unsafe_set_int64_le_exn (buf : t @ local) ~pos value =
 let read fd buf = Bigstring_unix.read fd (Obj.magic Obj.magic buf)
 let write fd buf = Bigstring_unix.write fd (Obj.magic Obj.magic buf)
 
-let to_bytes buf = Bigstring.to_bytes (Obj.magic Obj.magic buf)
+let to_bytes buf ~pos ~len = Bigstring.to_bytes ~pos ~len (Obj.magic Obj.magic buf)
 
-let blit_from_bytes buf bytes =
-  Bigstring.From_bytes.blit ~src:bytes ~dst:(Obj.magic Obj.magic buf) ~src_pos:0 ~dst_pos:0 ~len:(Bytes.length bytes)
+let blit_from_bytes buf bytes ~src_pos ~dst_pos ~len =
+  Bigstring.From_bytes.blit ~src:bytes ~dst:(Obj.magic Obj.magic buf) ~src_pos ~dst_pos ~len
 
 let memset = Bigstring_unix.memset

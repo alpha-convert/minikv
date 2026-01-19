@@ -10,7 +10,6 @@ val page_size : int
 val set_pageno : t -> Pageno.t -> unit
 val pageno : t @ local -> Pageno.t
 val is_dirty : t @ local -> bool
-
 val flush : t @ local -> unit
 
 

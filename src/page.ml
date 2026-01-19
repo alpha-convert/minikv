@@ -2,7 +2,6 @@ open! Core
 open! Core_unix
 
 let page_size = 16384
-(* let page_size = 4096 *)
 
 type t = {
   raw : Off_heap_buffer.t;
@@ -11,8 +10,8 @@ type t = {
   mutable dirty : bool
 }
 
-let underlying t = t.dirty <- true; t.raw
-let underlying_read_only t = t.raw
+let underlying t = t.dirty <- true; t.raw [@@inline always]
+let underlying_read_only t = t.raw [@@inline always]
 let pageno pg = pg.pageno
 let is_dirty pg = pg.dirty
 

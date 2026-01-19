@@ -60,9 +60,8 @@ let get t k : Bytes.t Or_null.t =
   let cursor = Bplustree.create_cursor t.bptree k in
   Or_null.map (Bplustree.get cursor) ~f:(fun pageno ->
     Page_cache.with_page t.cache pageno (fun pg ->
-      (* TODO: this reads back the whole buffer! we need to store lengths to read the proper amount out. *)
-      let buf = Page.underlying_read_only pg in
-      Off_heap_buffer.to_bytes buf [@nontail]))
+      let dp = Data_page.of_page pg in
+      Data_page.read dp [@nontail]))
     
 let put t k v =
   assert (Bytes.length v <= Page.page_size);
@@ -76,7 +75,7 @@ let put t k v =
       flush_metadata_if_new_root t;
       pageno
   in
-  Page_cache.with_page t.cache pageno (fun page ->
-    let buf = Page.underlying page in
-    Off_heap_buffer.blit_from_bytes buf v [@nontail]
+  Page_cache.with_page t.cache pageno (fun pg ->
+    let dp = Data_page.of_page pg in
+    Data_page.write dp v [@nontail]
   );
