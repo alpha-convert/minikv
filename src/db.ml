@@ -58,9 +58,7 @@ let load str =
 
 let get t k : Bytes.t Or_null.t =
   let cursor = Bplustree.create_cursor t.bptree k in
-  Or_null.map (Bplustree.get cursor) ~f:(fun pageno ->
-    let dp = Data_page.create pageno t.cache t.allocator in
-    Data_page.read dp)
+  Or_null.map (Bplustree.get cursor) ~f:(Data_page.read ~cache:t.cache)
     
 let put t k v =
   let cursor = Bplustree.create_cursor t.bptree k in
@@ -73,5 +71,4 @@ let put t k v =
       flush_metadata_if_new_root t;
       pageno
   in
-  let dp = Data_page.create pageno t.cache t.allocator in
-  Data_page.write dp v
+  Data_page.write pageno ~cache:t.cache ~allocator:t.allocator ~src:v

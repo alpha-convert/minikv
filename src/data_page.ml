@@ -38,7 +38,7 @@ module Header = struct
 
   let decode_type hdr = hdr land 0b11
 
-  let classify ~(cache : Page_cache.t) (pageno : Pageno.t) : page_type =
+  let classify ~cache pageno : page_type =
     Page_cache.with_page cache pageno (fun page ->
       let buf = Page.underlying_read_only page in
       let hdr = Off_heap_buffer.unsafe_get_int16_le buf ~pos:0 in
@@ -50,11 +50,6 @@ module Header = struct
 end
 
 module Packed = struct
-  type t = #{
-    pageno : Pageno.t;
-    cache : Page_cache.t;
-  }
-
   let header_size = 2
   let max_data = Page.page_size - header_size
 
@@ -62,20 +57,19 @@ module Packed = struct
 
   let decode_len hdr = hdr lsr 2
 
-  let create pageno cache = #{ pageno; cache }
 
-  let read t : Bytes.t =
-    Page_cache.with_page t.#cache t.#pageno (fun page ->
+  let read pageno cache : Bytes.t =
+    Page_cache.with_page cache pageno (fun page ->
       let buf = Page.underlying_read_only page in
       let hdr = Off_heap_buffer.unsafe_get_int16_le buf ~pos:0 in
       let len = decode_len hdr in
       Off_heap_buffer.to_bytes buf ~pos:header_size ~len [@nontail]
     )
 
-  let write t (bytes : Bytes.t) : unit =
+  let write pageno cache (bytes : Bytes.t) : unit =
     let len = Bytes.length bytes in
     assert (len <= max_data);
-    Page_cache.with_page t.#cache t.#pageno (fun page ->
+    Page_cache.with_page cache pageno (fun page ->
       let buf = Page.underlying page in
       Off_heap_buffer.unsafe_set_int16_le_exn buf ~pos:0 (encode_header len);
       Off_heap_buffer.blit_from_bytes buf bytes ~src_pos:0 ~dst_pos:header_size ~len [@nontail]
@@ -83,11 +77,6 @@ module Packed = struct
 end
 
 module Linked = struct
-  type t = #{
-    pageno : Pageno.t;
-    cache : Page_cache.t;
-    allocator : Page_allocator.t;
-  }
 
   let header_size = 8
   let max_data = Page.page_size - header_size
@@ -96,8 +85,6 @@ module Linked = struct
     (next_pageno lsl 2) lor Header.type_linked
 
   let decode_next_pageno hdr = hdr lsr 2
-
-  let create pageno cache allocator = #{ pageno; cache; allocator }
 
   let get_next_pageno (page : Page.t) : Pageno.t Or_null.t =
     let buf = Page.underlying_read_only page in
@@ -122,10 +109,9 @@ module Linked = struct
     let buf = Page.underlying page in
     Off_heap_buffer.blit_from_bytes buf bytes ~src_pos ~dst_pos:header_size ~len [@nontail]
 
-  let read t : Bytes.t =
-    let cache = t.#cache in
+  let read root cache : Bytes.t =
     let remaining,dst = 
-      Page_cache.with_page t.#cache t.#pageno (fun page ->
+      Page_cache.with_page cache root (fun page ->
         let total_size = get_remaining_size page in
         let result = Bytes.create total_size in
         total_size,result)
@@ -143,12 +129,10 @@ module Linked = struct
         in
         go next ~dst_pos:(dst_pos + max_data) ~remaining:(remaining - max_data)
     in
-    go (This t.#pageno) ~dst_pos:0 ~remaining;
+    go (This root) ~dst_pos:0 ~remaining;
     dst
 
-  let write t (bytes : Bytes.t) : unit =
-    let cache = t.#cache in
-    let allocator = t.#allocator in
+  let write root cache allocator (bytes : Bytes.t) : unit =
     let rec go pageno_or_null ~src_pos ~remaining : unit =
       match%optional.Or_null pageno_or_null with
       | None -> assert (remaining <= 0)
@@ -169,24 +153,18 @@ module Linked = struct
         in
         go next ~src_pos:(src_pos + max_data) ~remaining:(remaining - max_data)
     in
-    go (This t.#pageno) ~src_pos:0 ~remaining:(Bytes.length bytes)
+    go (This root) ~src_pos:0 ~remaining:(Bytes.length bytes)
 end
 
-type t = {
-  root : Pageno.t;
-  cache : Page_cache.t;
-  allocator : Page_allocator.t;
-}
+let read root ~cache  =
+  match Header.classify root ~cache with
+  | Packed -> Packed.read root cache
+  | Linked -> Linked.read root cache
 
-let create root cache allocator = { root; cache; allocator }
-
-let read t =
-  match Header.classify ~cache:t.cache t.root with
-  | Packed -> Packed.read (Packed.create t.root t.cache)
-  | Linked -> Linked.read (Linked.create t.root t.cache t.allocator)
-
-let write t bytes =
-  if Bytes.length bytes <= Packed.max_data then
-    Packed.write (Packed.create t.root t.cache) bytes
+let write root ~cache ~allocator ~src =
+  let src_length = Bytes.length src in
+  assert (src_length <= 0xFFFFFFFF);
+  if src_length <= Packed.max_data then
+    Packed.write root cache src
   else
-    Linked.write (Linked.create t.root t.cache t.allocator) bytes
+    Linked.write root cache allocator src
