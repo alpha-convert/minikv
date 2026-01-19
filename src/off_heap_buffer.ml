@@ -11,6 +11,9 @@ let unsafe_get_int8 (buf : t @ read local) ~pos =
 let unsafe_get_int16_le (buf : t @ read local) ~pos =
   Bigstring.unsafe_get_int16_le (Obj.magic Obj.magic buf) ~pos
 
+let unsafe_get_int32_le (buf : t @ read local) ~pos =
+  Bigstring.unsafe_get_int32_le (Obj.magic Obj.magic buf) ~pos
+
 let unsafe_get_int64_le_exn (buf : t @ read local) ~pos =
   Bigstring.unsafe_get_int64_le_exn (Obj.magic Obj.magic buf) ~pos
 
@@ -19,6 +22,9 @@ let unsafe_set_int8_exn (buf : t @ local) ~pos value =
 
 let unsafe_set_int16_le_exn (buf : t @ local) ~pos value =
   Bigstring.unsafe_set_int16_le (Obj.magic Obj.magic buf) ~pos value
+
+let unsafe_set_int32_le_exn (buf : t @ local) ~pos value =
+  Bigstring.unsafe_set_int32_le (Obj.magic Obj.magic buf) ~pos value
 
 let unsafe_set_int64_le_exn (buf : t @ local) ~pos value =
   Bigstring.unsafe_set_int64_le (Obj.magic Obj.magic buf) ~pos value
@@ -30,5 +36,8 @@ let to_bytes buf ~pos ~len = Bigstring.to_bytes ~pos ~len (Obj.magic Obj.magic b
 
 let blit_from_bytes buf bytes ~src_pos ~dst_pos ~len =
   Bigstring.From_bytes.blit ~src:bytes ~dst:(Obj.magic Obj.magic buf) ~src_pos ~dst_pos ~len
+
+let blit_to_bytes buf bytes ~src_pos ~dst_pos ~len =
+  Bigstring.To_bytes.blit ~src:(Obj.magic Obj.magic buf) ~dst:bytes ~src_pos ~dst_pos ~len
 
 let memset = Bigstring_unix.memset

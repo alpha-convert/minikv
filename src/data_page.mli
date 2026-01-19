@@ -2,6 +2,6 @@ open! Core
 
 type t
 
-val of_page : Page.t @ local -> t @ local
-val read : t @ local -> Bytes.t
-val write : t @ local -> Bytes.t -> unit
+val create : Pageno.t -> Page_cache.t -> Page_allocator.t -> t
+val read : t -> Bytes.t
+val write : t -> Bytes.t -> unit

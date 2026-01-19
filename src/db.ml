@@ -40,10 +40,10 @@ let flush t =
 
 let load str =
   let fd = openfile ~mode:[O_RDWR;O_CREAT] str in
-  let stat = Core_unix.fstat fd in
   let cache = Page_cache.create fd ~size:256 in
   let allocator = Page_allocator.create fd in
   let bptree =
+    let stat = Core_unix.fstat fd in
     if Int64.equal stat.st_size Int64.zero then begin
       let _metadata_page = Page_allocator.allocate_page allocator in
       let bptree = Bplustree.create cache allocator in
@@ -59,12 +59,10 @@ let load str =
 let get t k : Bytes.t Or_null.t =
   let cursor = Bplustree.create_cursor t.bptree k in
   Or_null.map (Bplustree.get cursor) ~f:(fun pageno ->
-    Page_cache.with_page t.cache pageno (fun pg ->
-      let dp = Data_page.of_page pg in
-      Data_page.read dp [@nontail]))
+    let dp = Data_page.create pageno t.cache t.allocator in
+    Data_page.read dp)
     
 let put t k v =
-  assert (Bytes.length v <= Page.page_size);
   let cursor = Bplustree.create_cursor t.bptree k in
   let pageno =
     match%optional.Or_null Bplustree.get cursor with
@@ -75,7 +73,5 @@ let put t k v =
       flush_metadata_if_new_root t;
       pageno
   in
-  Page_cache.with_page t.cache pageno (fun pg ->
-    let dp = Data_page.of_page pg in
-    Data_page.write dp v [@nontail]
-  );
+  let dp = Data_page.create pageno t.cache t.allocator in
+  Data_page.write dp v
