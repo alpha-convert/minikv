@@ -6,6 +6,7 @@ type t = {
   bptree : Bplustree.t;
   cache : Page_cache.t;
   allocator : Page_allocator.t;
+  free_list : Free_list.t;
   mutable latest_root_pageno : Pageno.t;
 }
 
@@ -18,12 +19,14 @@ module Metadata = struct
 
   let read_root_pageno page_cache =
     Page_cache.with_page page_cache metadata_pageno (fun page ->
+      let page = Page.classify_as_metadata_exn page in
       let buf = Page.underlying_read_only page in
       Pageno.of_int_exn (Off_heap_buffer.unsafe_get_int64_le_exn buf ~pos:root_pageno_offset)
     )
 
   let write_root_pageno page_cache root_pageno =
     Page_cache.with_page page_cache metadata_pageno (fun page ->
+      let page = Page.classify_as_metadata_exn page in
       let buf = Page.underlying page in
       Off_heap_buffer.unsafe_set_int64_le_exn buf ~pos:root_pageno_offset (Pageno.to_int root_pageno) [@nontail])
 end
@@ -41,7 +44,8 @@ let flush t =
 let load str =
   let fd = openfile ~mode:[O_RDWR;O_CREAT] str in
   let cache = Page_cache.create fd ~size:256 in
-  let allocator = Page_allocator.create fd in
+  let free_list = Free_list.create () in
+  let allocator = Page_allocator.create free_list fd in
   let bptree =
     let stat = Core_unix.fstat fd in
     if Int64.equal stat.st_size Int64.zero then begin
@@ -54,7 +58,7 @@ let load str =
       Bplustree.load cache allocator root_pageno
     end
   in
-  {fd;bptree;cache;allocator; latest_root_pageno = Bplustree.root bptree}
+  {fd;bptree;cache;free_list;allocator; latest_root_pageno = Bplustree.root bptree}
 
 let get t k : Bytes.t Or_null.t =
   let cursor = Bplustree.create_cursor t.bptree k in

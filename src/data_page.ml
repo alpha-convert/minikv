@@ -2,116 +2,83 @@
   Data Page Format
   ================
 
-  Each data page consists of a header followed by data.
+  Each data page has the 8-byte unified page header, which encodes whether
+  this is a Packed or Linked data page. The rest of the page is type-specific.
 
-  Page Types (2-bit discriminator)
-  --------------------------------
-    00 = Packed    Single-page value; data fits entirely on this page
-    01 = Linked    Page in a multi-page value chain
+  Packed:
+    ┌──────────────────┬────────────────┬─────────────────────────┐
+    │ 8 bytes          │   2 bytes      │  up to page_size - 10   │
+    │ unified header   │  data length   │       data              │
+    └──────────────────┴────────────────┴─────────────────────────┘
 
-  Header Layouts
-  --------------
-
-  Packed (2 bytes total):
-    ┌─────────┬────────────────┐
-    │ 2 bits  │    14 bits     │
-    │  0b00   │  data length   │
-    └─────────┴────────────────┘
-
-  Linked (8 bytes total):
-    ┌─────────┬────────────────────────────┬─────────────────────────────────┐
-    │ 2 bits  │          30 bits           │            32 bits              │
-    │  0b01   │       next_pageno          │    remaining size (bytes)       │
-    └─────────┴────────────────────────────┴─────────────────────────────────┘
+  Linked:
+    ┌──────────────────┬────────────────┬────────────────┬─────────────────────────┐
+    │ 8 bytes          │   4 bytes      │    4 bytes     │  up to page_size - 16   │
+    │ unified header   │  next_pageno   │ remaining size │       data              │
+    └──────────────────┴────────────────┴────────────────┴─────────────────────────┘
 
     remaining size = total bytes from this page onward (including this page's data)
-
 *)
 
 open! Core
 
-module Header = struct
-  type page_type = Packed | Linked
-
-  let type_packed = 0b00
-  let type_linked = 0b01
-
-  let decode_type hdr = hdr land 0b11
-
-  let classify ~cache pageno : page_type =
-    Page_cache.with_page cache pageno (fun page ->
-      let buf = Page.underlying_read_only page in
-      let hdr = Off_heap_buffer.unsafe_get_int16_le buf ~pos:0 in
-      match decode_type hdr with
-      | 0b00 -> Packed
-      | 0b01 -> Linked
-      | _ -> assert false
-    )
-end
-
 module Packed = struct
-  let header_size = 2
-  let max_data = Page.page_size - header_size
-
-  let encode_header len = len lsl 2
-
-  let decode_len hdr = hdr lsr 2
-
+  let len_offset = Page_header.size
+  let data_offset = Page_header.size + 2
+  let max_data = Page.page_size - data_offset
 
   let read pageno cache : Bytes.t =
     Page_cache.with_page cache pageno (fun page ->
+      let page = Page.classify_as_data_packed_exn page in
       let buf = Page.underlying_read_only page in
-      let hdr = Off_heap_buffer.unsafe_get_int16_le buf ~pos:0 in
-      let len = decode_len hdr in
-      Off_heap_buffer.to_bytes buf ~pos:header_size ~len [@nontail]
+      let len = Off_heap_buffer.unsafe_get_int16_le buf ~pos:len_offset in
+      Off_heap_buffer.to_bytes buf ~pos:data_offset ~len [@nontail]
     )
 
   let write pageno cache (bytes : Bytes.t) : unit =
     let len = Bytes.length bytes in
     assert (len <= max_data);
     Page_cache.with_page cache pageno (fun page ->
+      let page = Page.overwrite_as_data_packed page in
       let buf = Page.underlying page in
-      Off_heap_buffer.unsafe_set_int16_le_exn buf ~pos:0 (encode_header len);
-      Off_heap_buffer.blit_from_bytes buf bytes ~src_pos:0 ~dst_pos:header_size ~len [@nontail]
+      Off_heap_buffer.unsafe_set_int16_le_exn buf ~pos:len_offset len;
+      Off_heap_buffer.blit_from_bytes buf bytes ~src_pos:0 ~dst_pos:data_offset ~len [@nontail]
     )
 end
 
 module Linked = struct
+  (* After 8-byte unified header: 4-byte next_pageno, 4-byte remaining_size, then data *)
+  let next_pageno_offset = Page_header.size
+  let remaining_size_offset = Page_header.size + 4
+  let data_offset = Page_header.size + 8
+  let max_data = Page.page_size - data_offset
 
-  let header_size = 8
-  let max_data = Page.page_size - header_size
-
-  let encode_header next_pageno =
-    (next_pageno lsl 2) lor Header.type_linked
-
-  let decode_next_pageno hdr = hdr lsr 2
-
-  let get_next_pageno (page : Page.t) : Pageno.t Or_null.t =
+  let get_next_pageno (page : Page_header.data_linked Page.t) : Pageno.t Or_null.t =
     let buf = Page.underlying_read_only page in
-    let hdr32 = Off_heap_buffer.unsafe_get_int32_le buf ~pos:0 in
-    let next = decode_next_pageno hdr32 in
+    let next = Off_heap_buffer.unsafe_get_int32_le buf ~pos:next_pageno_offset in
     Pageno.of_int next
 
-  let get_remaining_size (page : Page.t) : int =
+  let get_remaining_size page : int =
     let buf = Page.underlying_read_only page in
-    Off_heap_buffer.unsafe_get_int32_le buf ~pos:4 [@nontail]
+    Off_heap_buffer.unsafe_get_int32_le buf ~pos:remaining_size_offset [@nontail]
 
-  let init_page (page : Page.t) ~next ~remaining_size : unit =
+  let init_page (page : Page_header.data_linked Page.t) ~next ~remaining_size : unit =
     let buf = Page.underlying page in
     let next_int = match%optional.Or_null next with
       | None -> -1
       | Some p -> Pageno.to_int p
     in
-    Off_heap_buffer.unsafe_set_int32_le_exn buf ~pos:0 (encode_header next_int);
-    Off_heap_buffer.unsafe_set_int32_le_exn buf ~pos:4 remaining_size [@nontail]
+    Off_heap_buffer.unsafe_set_int32_le_exn buf ~pos:next_pageno_offset next_int;
+    Off_heap_buffer.unsafe_set_int32_le_exn buf ~pos:remaining_size_offset remaining_size [@nontail]
 
-  let write_data (page : Page.t) (bytes : Bytes.t) ~src_pos ~len : unit =
+  let write_data (page : Page_header.data_linked Page.t) (bytes : Bytes.t) ~src_pos ~len : unit =
     let buf = Page.underlying page in
-    Off_heap_buffer.blit_from_bytes buf bytes ~src_pos ~dst_pos:header_size ~len [@nontail]
+    Off_heap_buffer.blit_from_bytes buf bytes ~src_pos ~dst_pos:data_offset ~len [@nontail]
 
   let read root cache : Bytes.t =
-    let remaining,dst = 
+    let remaining,dst =
       Page_cache.with_page cache root (fun page ->
+        let page = Page.classify_as_data_linked_exn page in
         let total_size = get_remaining_size page in
         let result = Bytes.create total_size in
         total_size,result)
@@ -123,9 +90,10 @@ module Linked = struct
         let to_copy = min remaining max_data in
         let next =
           Page_cache.with_page cache pageno (fun page ->
+            let page = Page.classify_as_data_linked_exn page in
             let buf = Page.underlying_read_only page in
-            Off_heap_buffer.blit_to_bytes buf dst ~src_pos:header_size ~dst_pos ~len:to_copy;
-            get_next_pageno page)
+            Off_heap_buffer.blit_to_bytes buf dst ~src_pos:data_offset ~dst_pos ~len:to_copy;
+            get_next_pageno page [@nontail])
         in
         go next ~dst_pos:(dst_pos + max_data) ~remaining:(remaining - max_data)
     in
@@ -133,33 +101,38 @@ module Linked = struct
     dst
 
   let write root cache allocator (bytes : Bytes.t) : unit =
-    let rec go pageno_or_null ~src_pos ~remaining : unit =
-      match%optional.Or_null pageno_or_null with
-      | None -> assert (remaining <= 0)
-      | Some pageno ->
-        let next =
-          Page_cache.with_page cache pageno (fun page ->
-            let to_write = min remaining max_data in
-            let next =
-              if remaining > max_data then begin
-                match%optional.Or_null get_next_pageno page with
-                | Some existing -> This existing
-                | None -> This (Page_allocator.allocate_page allocator)
-              end else Null
-            in
-            init_page page ~next ~remaining_size:remaining;
-            write_data page bytes ~src_pos ~len:to_write;
-            next)
-        in
+    let rec go pageno ~src_pos ~remaining : unit =
+      let next_or_null =
+        Page_cache.with_page cache pageno (fun page ->
+          let page = Page.overwrite_as_data_linked page in
+          let to_write = min remaining max_data in
+          let next =
+            if remaining > max_data then begin
+              match%optional.Or_null get_next_pageno page with
+              | Some existing -> This existing
+              | None -> This (Page_allocator.allocate_page allocator)
+            end else Null
+          in
+          init_page page ~next ~remaining_size:remaining;
+          write_data page bytes ~src_pos ~len:to_write;
+          next)
+      in
+      match%optional.Or_null next_or_null with
+      | None -> ()
+      | Some next ->
         go next ~src_pos:(src_pos + max_data) ~remaining:(remaining - max_data)
     in
-    go (This root) ~src_pos:0 ~remaining:(Bytes.length bytes)
+    go root ~src_pos:0 ~remaining:(Bytes.length bytes)
 end
 
-let read root ~cache  =
-  match Header.classify root ~cache with
-  | Packed -> Packed.read root cache
-  | Linked -> Linked.read root cache
+let read root ~cache =
+  Page_cache.with_page cache root (fun page ->
+    (* Blah, this is wasteful *)
+    match Page.classify page with
+    | Page.C #(Page_header.Data_packed_header, _) -> Packed.read root cache
+    | Page.C #(Page_header.Data_linked_header, _) -> Linked.read root cache
+    | _ -> assert false
+  )
 
 let write root ~cache ~allocator ~src =
   let src_length = Bytes.length src in
