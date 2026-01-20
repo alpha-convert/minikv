@@ -1,6 +1,61 @@
-type t = Pageno.t Vec.t
+(*
+  Free Page Format
+  =================
 
-let create () = Vec.create ()
+  Each free page has the 8-byte unified page header, followed by the next free pageno.
 
-let add t p = Vec.push_back t p
-let take t = Vec.pop_back t
+    ┌──────────────────┬────────────────────┐
+    │ 8 bytes          │   8 bytes          │
+    │ unified header   │  next_free_pageno  │
+    └──────────────────┴────────────────────┘
+
+  next_free_pageno is -1 if there is no next free page.
+*)
+
+open! Core
+
+let next_pageno_offset = Page_header.size
+
+type t = {
+  cache : Page_cache.t;
+  mutable head : Pageno.t Or_null.t
+}
+
+let get_head t = t.head
+
+let set_head t pageno = t.head <- This pageno
+
+let create cache = {cache; head = Null}
+
+module Free_page = struct
+  let get_next_pageno page =
+    let page = Page.classify_as_free_page_exn page in
+    let buf = Page.underlying_read_only page in
+    Pageno.of_int (Off_heap_buffer.unsafe_get_int64_le_exn buf ~pos:next_pageno_offset)
+
+  let set_next_pageno page next =
+    let page = Page.classify_as_free_page_exn page in
+    let buf = Page.underlying page in
+    let next_int = match%optional.Or_null next with
+      | None -> -1
+      | Some p -> Pageno.to_int p
+    in
+    Off_heap_buffer.unsafe_set_int64_le_exn buf ~pos:next_pageno_offset next_int [@nontail]
+
+end
+
+
+let add t pageno =
+  Page_cache.with_page t.cache pageno (fun page -> Free_page.set_next_pageno page t.head [@nontail]);
+  t.head <- This pageno
+
+let take t =
+  match%optional.Or_null t.head with
+  | None -> Null
+  | Some head_pageno ->
+    let next =
+      Page_cache.with_page t.cache head_pageno (fun page ->
+        Free_page.get_next_pageno page [@nontail])
+    in
+    t.head <- next;
+    This head_pageno

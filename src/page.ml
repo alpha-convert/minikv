@@ -87,6 +87,11 @@ let classify_as_bplustree_internal_exn page @ local = exclave_
   | C #(Page_header.Bplustree_internal_header, pg) -> Obj.magic pg
   | _ -> assert false
 
+let classify_as_free_page_exn page @ local = exclave_
+  match classify page with
+  | C #(Page_header.Free_page_header, pg) -> Obj.magic pg
+  | _ -> assert false
+
 let overwrite_as (type a) (header : a Page_header.t) ((P pg) @ local) : a t @ local = exclave_
   let buf = underlying pg in
   Page_header.write_to_page header buf;
@@ -106,3 +111,6 @@ let overwrite_as_data_packed page @ local = exclave_
 
 let overwrite_as_metadata page @ local = exclave_
   overwrite_as Page_header.Metadata_header page
+
+let overwrite_as_free_page page @ local = exclave_
+  overwrite_as Page_header.Free_page_header page

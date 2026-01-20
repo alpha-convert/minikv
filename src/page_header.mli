@@ -3,13 +3,15 @@ type bplustree_internal
 type bplustree_leaf
 type data_packed
 type data_linked
+type free_page
 
-type 'a t =
+type _ t =
 | Metadata_header : metadata_page t
 | Bplustree_internal_header : bplustree_internal t
 | Bplustree_leaf_header : bplustree_leaf t
 | Data_packed_header : data_packed t
 | Data_linked_header : data_linked t
+| Free_page_header : free_page t
 
 val size : int
 
