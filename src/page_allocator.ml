@@ -12,7 +12,7 @@ let create free_list fd =
   {
     fd;
     free_list;
-    last_pageno = Pageno.of_int (sz / Page.page_size - 1)
+    last_pageno = Pageno.Or_null.of_int (sz / Page.page_size - 1)
   }
 
 

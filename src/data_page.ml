@@ -56,7 +56,7 @@ module Linked = struct
   let get_next_pageno (page : Page_header.data_linked Page.t) : Pageno.t Or_null.t =
     let buf = Page.underlying_read_only page in
     let next = Off_heap_buffer.unsafe_get_int32_le buf ~pos:next_pageno_offset in
-    Pageno.of_int next
+    Pageno.Or_null.of_int next
 
   let get_remaining_size page : int =
     let buf = Page.underlying_read_only page in
@@ -64,10 +64,7 @@ module Linked = struct
 
   let init_page (page : Page_header.data_linked Page.t) ~next ~remaining_size : unit =
     let buf = Page.underlying page in
-    let next_int = match%optional.Or_null next with
-      | None -> -1
-      | Some p -> Pageno.to_int p
-    in
+    let next_int = Pageno.Or_null.to_int next in 
     Off_heap_buffer.unsafe_set_int32_le_exn buf ~pos:next_pageno_offset next_int;
     Off_heap_buffer.unsafe_set_int32_le_exn buf ~pos:remaining_size_offset remaining_size [@nontail]
 

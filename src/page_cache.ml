@@ -12,7 +12,7 @@ let compare_seqno s s' =
   (* Prefer clean pages over dirty pages for eviction *)
   let (Page.P pg) = s.#pg in
   let (Page.P pg') = s'.#pg in
-  match (Page.is_dirty pg, Page.is_dirty pg') with
+  match (Page.Expert.is_dirty pg, Page.Expert.is_dirty pg') with
   | (false, true) -> -1
   | (true, false) -> 1
   | _ -> Int.compare s.#seqno s'.#seqno
@@ -38,12 +38,12 @@ let flush_all t =
     if slot.#seqno < 0 then ()
     else
       let (P pg) = slot.#pg in
-      Page.flush pg
+      Page.Expert.flush pg
   done
 
 let create fd ~size =
   let dummy_slot _ =
-    let dummy_pg = Page.create fd (Pageno.of_int_exn Int.max_value) Page_header.Metadata_header in
+    let dummy_pg = Page.Expert.create fd (Pageno.of_int_exn Int.max_value) Page_header.Metadata_header in
     #{ in_use = false; pg = P dummy_pg; seqno = -1 }
   in
   (* This is among the most horrifying hacks i've ever pulled. *)
@@ -74,7 +74,7 @@ let evict t =
   let (P pg) = slot.#pg in
   let old_pageno = Page.pageno pg in
   Hashtbl.remove t.pageno_to_slot old_pageno;
-  Page.flush pg;
+  Page.Expert.flush pg;
   best_idx
 
 let with_page t pageno f =
@@ -83,7 +83,7 @@ let with_page t pageno f =
     | Some slot_idx -> slot_idx
     | None -> let slot_idx = evict t in
               let slot = t.slots.(slot_idx) in
-               Page.overwrite_with slot.#pg pageno;
+               Page.Expert.overwrite_with slot.#pg pageno;
                Hashtbl.set t.pageno_to_slot ~key:pageno ~data:slot_idx;
                slot_idx
   in

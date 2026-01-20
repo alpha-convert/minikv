@@ -9,7 +9,7 @@
     │ unified header   │  next_free_pageno  │
     └──────────────────┴────────────────────┘
 
-  next_free_pageno is -1 if there is no next free page.
+  next_free_pageno is an Pageno.Or_null.t
 *)
 
 open! Core
@@ -21,25 +21,23 @@ type t = {
   mutable head : Pageno.t Or_null.t
 }
 
-let get_head t = t.head
+module Expert = struct
+  let get_head t = t.head
+  let set_head t pageno = t.head <- This pageno
 
-let set_head t pageno = t.head <- This pageno
-
-let create cache = {cache; head = Null}
+  let create cache = {cache; head = Null}
+end
 
 module Free_page = struct
   let get_next_pageno page =
     let page = Page.classify_as_free_page_exn page in
     let buf = Page.underlying_read_only page in
-    Pageno.of_int (Off_heap_buffer.unsafe_get_int64_le_exn buf ~pos:next_pageno_offset)
+    Pageno.Or_null.of_int (Off_heap_buffer.unsafe_get_int64_le_exn buf ~pos:next_pageno_offset)
 
   let set_next_pageno page next =
     let page = Page.classify_as_free_page_exn page in
     let buf = Page.underlying page in
-    let next_int = match%optional.Or_null next with
-      | None -> -1
-      | Some p -> Pageno.to_int p
-    in
+    let next_int = Pageno.Or_null.to_int next in
     Off_heap_buffer.unsafe_set_int64_le_exn buf ~pos:next_pageno_offset next_int [@nontail]
 end
 

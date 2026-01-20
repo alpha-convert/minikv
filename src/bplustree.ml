@@ -8,13 +8,11 @@ end
 (* Layout offsets - after unified page header *)
 let parent_offset = Page_header.size
 let num_keys_offset = Page_header.size + 8
-let null_pageno_val = -1
 
 let get_parent pg =
   let buf = Page.underlying_read_only pg in
   let parent = Off_heap_buffer.unsafe_get_int64_le_exn buf ~pos:parent_offset in
-  if Int.equal parent null_pageno_val then Null
-  else Pageno.of_int parent
+  Pageno.Or_null.of_int parent
 
 let set_parent pg pageno =
   let buf = Page.underlying pg in
@@ -38,9 +36,9 @@ module Internal = struct
 
   let tbl_start = Page_header.size + 8 + 2  (* header + parent + num_keys *)
 
-  let entry_size = 16
   let child_size = 8
   let key_size = 8
+  let entry_size = child_size + key_size
 
   let max_keys = (Page.page_size - tbl_start - child_size) / entry_size
 
@@ -96,10 +94,7 @@ module Internal = struct
   let init (page : Page.packed @ local) ~parent : t @ local = exclave_
     let page = Page.overwrite_as_bplustree_internal page in
     let buf = Page.underlying page in
-    let parent_int = match%optional.Or_null parent with
-      | None -> null_pageno_val
-      | Some p -> Pageno.to_int p
-    in
+    let parent_int = Pageno.Or_null.to_int parent in 
     (Off_heap_buffer.unsafe_set_int64_le_exn buf ~pos:parent_offset parent_int);
     (Off_heap_buffer.unsafe_set_int16_le_exn buf ~pos:num_keys_offset 0);
     page
@@ -211,34 +206,34 @@ module Leaf = struct
   let left_sib_offset = Page_header.size + 8 + 2  (* header + parent + num_keys *)
   let right_sib_offset = left_sib_offset + 8
   let entries_start = right_sib_offset + 8
-  let entry_size = 16
   let key_size = 8
   let pageno_size = 8
+  let entry_size = key_size + pageno_size
 
   let max_keys = (Page.page_size - entries_start) / entry_size
 
   let num_keys t =
     let buf = Page.underlying_read_only t in
-    (Off_heap_buffer.unsafe_get_int16_le buf ~pos:num_keys_offset [@nontail])
+    Off_heap_buffer.unsafe_get_int16_le buf ~pos:num_keys_offset [@nontail]
 
   let set_num_keys t n =
     let buf = Page.underlying t in
-    (Off_heap_buffer.unsafe_set_int16_le_exn buf ~pos:num_keys_offset n [@nontail])
+    Off_heap_buffer.unsafe_set_int16_le_exn buf ~pos:num_keys_offset n [@nontail]
   
   let get_sibs t =
     let buf = Page.underlying_read_only t in
-    let left = Pageno.of_int (Off_heap_buffer.unsafe_get_int64_le_exn buf ~pos:left_sib_offset) in
-    let right = Pageno.of_int (Off_heap_buffer.unsafe_get_int64_le_exn buf ~pos:right_sib_offset) in
+    let left = Pageno.Or_null.of_int (Off_heap_buffer.unsafe_get_int64_le_exn buf ~pos:left_sib_offset) in
+    let right = Pageno.Or_null.of_int (Off_heap_buffer.unsafe_get_int64_le_exn buf ~pos:right_sib_offset) in
     #(~left,~right)
   
   let set_left_sib (t @ local) left =
     let buf = Page.underlying t in
-    let left_sib_i = match%optional.Or_null left with None -> null_pageno_val | Some p -> Pageno.to_int p in
+    let left_sib_i = Pageno.Or_null.to_int left in
     Off_heap_buffer.unsafe_set_int64_le_exn buf ~pos:left_sib_offset left_sib_i [@nontail]
 
   let set_right_sib (t @ local) right =
     let buf = Page.underlying t in
-    let right_sib_i = match%optional.Or_null right with None -> null_pageno_val | Some p -> Pageno.to_int p in
+    let right_sib_i = Pageno.Or_null.to_int right in
     Off_heap_buffer.unsafe_set_int64_le_exn buf ~pos:right_sib_offset right_sib_i [@nontail]
 
   let is_full t =
@@ -254,18 +249,15 @@ module Leaf = struct
   let set_entry t i ~key ~pointer =
     let buf = Page.underlying t in
     let pos = entries_start + (i * entry_size) in
-    (Off_heap_buffer.unsafe_set_int64_le_exn buf ~pos key [@nontail]);
-    (Off_heap_buffer.unsafe_set_int64_le_exn buf ~pos:(pos + key_size) (Pageno.to_int pointer) [@nontail])
+    Off_heap_buffer.unsafe_set_int64_le_exn buf ~pos key;
+    Off_heap_buffer.unsafe_set_int64_le_exn buf ~pos:(pos + key_size) (Pageno.to_int pointer) [@nontail]
    
   let init (page : Page.packed @ local) ~parent ~left ~right : t @ local = exclave_
     let page = Page.overwrite_as_bplustree_leaf page in
     let buf = Page.underlying page in
-    let parent_int = match%optional.Or_null parent with
-      | None -> null_pageno_val
-      | Some p -> Pageno.to_int p
-    in
-    (Off_heap_buffer.unsafe_set_int64_le_exn buf ~pos:parent_offset parent_int);
-    (Off_heap_buffer.unsafe_set_int16_le_exn buf ~pos:num_keys_offset 0);
+    let parent_int = Pageno.Or_null.to_int parent in
+    Off_heap_buffer.unsafe_set_int64_le_exn buf ~pos:parent_offset parent_int;
+    Off_heap_buffer.unsafe_set_int16_le_exn buf ~pos:num_keys_offset 0;
     set_left_sib page left;
     set_right_sib page right;
     page

@@ -24,7 +24,7 @@ module Metadata = struct
     Page_cache.with_page page_cache metadata_pageno (fun page ->
       let page = Page.classify_as_metadata_exn page in
       let buf = Page.underlying_read_only page in
-      Pageno.of_int (Off_heap_buffer.unsafe_get_int64_le_exn buf ~pos:offset)
+      Pageno.Or_null.of_int (Off_heap_buffer.unsafe_get_int64_le_exn buf ~pos:offset)
     )
 
   let write_metadata page_cache pageno offset =
@@ -46,7 +46,7 @@ let flush_metadata_if_new_root_or_freelist t =
   if not (Pageno.equal root_pageno t.latest_root_pageno) then (
     t.latest_root_pageno <- root_pageno;
     Metadata.write_root_pageno t.cache root_pageno);
-  let freelist_head = Free_list.get_head t.free_list in
+  let freelist_head = Free_list.Expert.get_head t.free_list in
   if not (Or_null.equal Pageno.equal freelist_head t.latest_freelist_head) then (
     t.latest_freelist_head <- freelist_head;
     match%optional.Or_null freelist_head with
@@ -60,7 +60,7 @@ let flush t =
 let load str =
   let fd = openfile ~mode:[O_RDWR;O_CREAT] str in
   let cache = Page_cache.create fd ~size:256 in
-  let free_list = Free_list.create cache in
+  let free_list = Free_list.Expert.create cache in
   let allocator = Page_allocator.create free_list fd in
   let bptree,freelist_head =
     let stat = Core_unix.fstat fd in
@@ -78,7 +78,7 @@ let load str =
   in
   (match%optional.Or_null freelist_head with
   | None -> ()
-  | Some head -> Free_list.set_head free_list head);
+  | Some head -> Free_list.Expert.set_head free_list head);
   {fd;bptree;cache;free_list;allocator; latest_root_pageno = Bplustree.root bptree; latest_freelist_head = freelist_head}
 
 let get t k : Bytes.t Or_null.t =

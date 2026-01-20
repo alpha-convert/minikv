@@ -18,7 +18,7 @@ let test_differential_insert_lookup () =
   Test.run_exn ~config:{Test.default_config with test_count=5} (module T) ~f:(fun ops ->
     let (_, fd) = mkstemp "bptree_test" in
     let page_cache = Page_cache.create fd ~size:256 in
-    let free_list = Free_list.create page_cache in
+    let free_list = Free_list.Expert.create page_cache in
     let allocator = Page_allocator.create free_list fd in
     
     let bptree = Bplustree.create page_cache allocator in

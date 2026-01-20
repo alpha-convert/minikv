@@ -3,9 +3,7 @@ open! Core_unix
 
 type 'a t : value mod non_float
 type packed = | P : 'a t -> packed [@@unboxed]
-type classified = | C : #('a Page_header.t * 'a t) -> classified
-val create : File_descr.t -> Pageno.t -> 'a Page_header.t -> 'a t
-val overwrite_with : packed -> Pageno.t -> unit
+type classified = | C : #('a Page_header.t * 'a t) -> classified [@@unboxed]
 
 val classify : packed @ local -> classified @ local
 val classify_as_data_linked_exn : packed @ local -> Page_header.data_linked t @ local
@@ -26,8 +24,13 @@ val overwrite_as_free_page : packed @ local -> Page_header.free_page t @ local
 val page_size : int
 
 val pageno : 'a t @ local -> Pageno.t
-val is_dirty : 'a t @ local -> bool
-val flush : 'a t @ local -> unit
 
 val underlying_read_only : 'a t @ local -> Off_heap_buffer.t @ local read
 val underlying : 'a t @ local -> Off_heap_buffer.t @ local
+
+module Expert : sig
+    val create : File_descr.t -> Pageno.t -> 'a Page_header.t -> 'a t
+    val overwrite_with : packed -> Pageno.t -> unit
+    val flush : 'a t @ local -> unit
+    val is_dirty : 'a t @ local -> bool
+end
