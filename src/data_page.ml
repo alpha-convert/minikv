@@ -71,10 +71,6 @@ module Linked = struct
     Off_heap_buffer.unsafe_set_int32_le_exn buf ~pos:next_pageno_offset next_int;
     Off_heap_buffer.unsafe_set_int32_le_exn buf ~pos:remaining_size_offset remaining_size [@nontail]
 
-  let write_data (page : Page_header.data_linked Page.t) (bytes : Bytes.t) ~src_pos ~len : unit =
-    let buf = Page.underlying page in
-    Off_heap_buffer.blit_from_bytes buf bytes ~src_pos ~dst_pos:data_offset ~len [@nontail]
-
   let read root cache : Bytes.t =
     let remaining,dst =
       Page_cache.with_page cache root (fun page ->
@@ -114,7 +110,8 @@ module Linked = struct
             end else Null
           in
           init_page page ~next ~remaining_size:remaining;
-          write_data page bytes ~src_pos ~len:to_write;
+          let buf = Page.underlying page in
+          Off_heap_buffer.blit_from_bytes buf bytes ~src_pos ~dst_pos:data_offset ~len:to_write;
           next)
       in
       match%optional.Or_null next_or_null with

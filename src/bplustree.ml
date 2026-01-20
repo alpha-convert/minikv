@@ -2,7 +2,7 @@ open! Core
 open! Core_unix
 
 module SplitResult = struct
-  type t = NoSplit | Split of (int * Pageno.t)
+  type t = NoSplit | Split of #(int * Pageno.t)
 end
 
 (* Layout offsets - after unified page header *)
@@ -20,15 +20,13 @@ let set_parent pg pageno =
   let buf = Page.underlying pg in
   Off_heap_buffer.unsafe_set_int64_le_exn buf ~pos:parent_offset (Pageno.to_int pageno) [@nontail]
 
-module Internal : sig
-  type t = Page_header.bplustree_internal Page.t
-  val init : Page.packed @ local -> parent:Pageno.t Or_null.t -> t @ local
-  val set_child : t @ local -> int -> Pageno.t -> unit
-  val set_key : t @ local -> int -> int -> unit
-  val set_num_keys : t @ local -> int -> unit
-  val lookup_key : t @ local -> int -> Pageno.t
-  val insert : t @ local -> key:int -> right_child:Pageno.t -> Page_cache.t -> Page_allocator.t -> SplitResult.t
-end = struct
+let update_child_parent page_cache child_pageno new_parent =
+  Page_cache.with_page page_cache child_pageno (fun child_page ->
+    match Page.classify_as_bplustree_exn child_page with
+    | Either.First internal -> set_parent internal new_parent [@nontail]
+    | Either.Second leaf -> set_parent leaf new_parent [@nontail])
+
+module Internal = struct
   (* Internal node layout:
      - header: 8 bytes unified page header
      - parent: 64 bit parent pointer
@@ -146,25 +144,32 @@ end = struct
     (*  logical position (after insertion) *)
     let get_entry_at_logical i =
       if i < insert_pos then
-        (get_key t i, get_child t (i + 1))
+        #(get_key t i, get_child t (i + 1))
       else if i = insert_pos then
-        (key, right_child)
+        #(key, right_child)
       else
-        (get_key t (i - 1), get_child t i)
+        #(get_key t (i - 1), get_child t i)
     in
 
-    let promoted_key, mid_right_child = get_entry_at_logical mid in
+    let #(promoted_key, mid_right_child) = get_entry_at_logical mid in
 
     (* Build right node with entries [mid+1..max_keys] *)
     Page_cache.with_page page_cache right_pageno (fun right_page_raw ->
       let right_page = init right_page_raw ~parent in
       set_child right_page 0 mid_right_child;
       for i = mid + 1 to max_keys do
-        let k, c = get_entry_at_logical i in
+        let #(k, c) = get_entry_at_logical i in
         set_key right_page (i - mid - 1) k;
         set_child right_page (i - mid) c
       done;
       set_num_keys right_page (max_keys - mid) [@nontail]);
+
+    (* Update parent pointers for children that moved to right node *)
+    update_child_parent page_cache mid_right_child right_pageno;
+    for i = mid + 1 to max_keys do
+      let #(_, c) = get_entry_at_logical i in
+      update_child_parent page_cache c right_pageno
+    done;
 
     (* Update left node with entries [0..mid-1] *)
     (* We need to move entries if insert_pos < mid *)
@@ -181,7 +186,7 @@ end = struct
     (* If insert_pos >= mid, the new entry went to right node, so left is unchanged *)
     set_num_keys t mid;
 
-    promoted_key, right_pageno
+    #(promoted_key, right_pageno)
 
   let insert t ~key ~right_child page_cache allocator =
     if not (is_full t) then begin
@@ -192,14 +197,7 @@ end = struct
 
 end
 
-module Leaf : sig
-  type t = Page_header.bplustree_leaf Page.t
-  val init : Page.packed @ local -> parent:Pageno.t Or_null.t -> left:Pageno.t Or_null.t -> right:Pageno.t Or_null.t -> t @ local
-  val lookup_key : t @ local -> int -> Pageno.t Or_null.t
-  val insert : t @ local -> key:int -> value:Pageno.t -> Page_cache.t -> Page_allocator.t -> SplitResult.t
-  val num_keys : t @ local -> int
-  val get_sibs : t @ local -> #(left:Pageno.t Or_null.t * right:Pageno.t Or_null.t)
-end = struct
+module Leaf = struct
   (* Leaf node layout:
      - header: 8 bytes unified page header
      - parent: 64 bit parent pointer
@@ -313,6 +311,7 @@ end = struct
   let split t ~key ~value page_cache allocator =
     assert (num_keys t = max_keys);
 
+    (* TODO: do this split in place... *)
     let entries = Array.init (max_keys + 1) ~f:(fun i ->
       if i < max_keys then get_entry t i
       else (key, value)
@@ -348,7 +347,7 @@ end = struct
         Page_cache.with_page page_cache old_right_pageno (fun (P old_right) ->
           set_left_sib old_right (This right_pageno)));
 
-    (pivot_key, right_pageno)
+    #(pivot_key, right_pageno)
 
   let insert (t @ local) ~key ~value page_cache allocator =
     match find_key_pos t key with
@@ -428,22 +427,19 @@ let set cursor value =
               Internal.set_key new_root 0 split_key;
               Internal.set_child new_root 1 split_right;
               Internal.set_num_keys new_root 1;
-              Page_cache.with_page cache current_pageno (fun child ->
-                let child = Page.classify_as_bplustree_internal_exn child in
-                set_parent child new_root_pageno [@nontail]
-              );
               Page_cache.with_page cache split_right (fun child ->
                 let child = Page.classify_as_bplustree_internal_exn child in
                 set_parent child new_root_pageno [@nontail]
               )
             );
+            set_parent current_page new_root_pageno;
             t.root <- new_root_pageno
         | Some parent_pageno ->
             Page_cache.with_page cache parent_pageno (fun parent_page ->
               let parent_page = Page.classify_as_bplustree_internal_exn parent_page in
               match Internal.insert parent_page ~key:split_key ~right_child:split_right cache allocator with
               | SplitResult.NoSplit -> ()
-              | SplitResult.Split (new_key, new_right) ->
+              | SplitResult.Split #(new_key, new_right) ->
                   propagate_split parent_pageno new_key new_right))
       | Either.Second current_page ->
         (match%optional.Or_null get_parent current_page with
@@ -455,22 +451,19 @@ let set cursor value =
               Internal.set_key new_root 0 split_key;
               Internal.set_child new_root 1 split_right;
               Internal.set_num_keys new_root 1;
-              Page_cache.with_page cache current_pageno (fun child ->
-                let child = Page.classify_as_bplustree_leaf_exn child in
-                set_parent child new_root_pageno [@nontail]
-              );
               Page_cache.with_page cache split_right (fun child ->
                 let child = Page.classify_as_bplustree_leaf_exn child in
                 set_parent child new_root_pageno [@nontail]
               )
             );
+            set_parent current_page new_root_pageno;
             t.root <- new_root_pageno
         | Some parent_pageno ->
             Page_cache.with_page cache parent_pageno (fun parent_page ->
               let parent_page = Page.classify_as_bplustree_internal_exn parent_page in
               match Internal.insert parent_page ~key:split_key ~right_child:split_right cache allocator with
               | SplitResult.NoSplit -> ()
-              | SplitResult.Split (new_key, new_right) ->
+              | SplitResult.Split #(new_key, new_right) ->
                   propagate_split parent_pageno new_key new_right)))
   in
   let split_result =
@@ -480,7 +473,7 @@ let set cursor value =
   in
   match split_result with
   | SplitResult.NoSplit -> ()
-  | SplitResult.Split (pivot, right_pageno) ->
+  | SplitResult.Split #(pivot, right_pageno) ->
       (* After split, the cursor's key may now be in a the new leaf! *)
       if key >= pivot then cursor.leaf_pageno <- right_pageno;
       propagate_split leaf_pageno pivot right_pageno
