@@ -41,7 +41,6 @@ module Free_page = struct
       | Some p -> Pageno.to_int p
     in
     Off_heap_buffer.unsafe_set_int64_le_exn buf ~pos:next_pageno_offset next_int [@nontail]
-
 end
 
 

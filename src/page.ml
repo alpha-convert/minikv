@@ -10,6 +10,8 @@ type _ t = {
   mutable dirty : bool
 }
 
+let unsafe_cast_page (pg : 'a t) : 'b t = pg
+
 type packed = | P : _ t -> packed [@@unboxed]
 
 type classified = | C : #('a Page_header.t * 'a t) -> classified
@@ -54,42 +56,42 @@ let create fd pageno header =
 let classify ((P pg) @ local) @ local = exclave_
   let buf = underlying_read_only pg in
   let tag @ local = Page_header.read_from_page buf in
-  C #(tag,Obj.magic pg)
+  C #(tag,unsafe_cast_page pg)
 
 let classify_as_data_linked_exn page @ local = exclave_
   match classify page with
-  | C #(Page_header.Data_linked_header,pg) -> Obj.magic pg
+  | C #(Page_header.Data_linked_header,pg) -> (unsafe_cast_page pg : Page_header.data_linked t)
   | _ -> assert false
 
 let classify_as_data_packed_exn page @ local = exclave_
   match classify page with
-  | C #(Page_header.Data_packed_header,pg) -> Obj.magic pg
+  | C #(Page_header.Data_packed_header,pg) -> (unsafe_cast_page pg : Page_header.data_packed t)
   | _ -> assert false
 
 let classify_as_metadata_exn page @ local = exclave_
   match classify page with
-  | C #(Page_header.Metadata_header,pg) -> Obj.magic pg
+  | C #(Page_header.Metadata_header,pg) -> (unsafe_cast_page pg : Page_header.metadata_page t)
   | _ -> assert false
 
 let classify_as_bplustree_exn page @ local = exclave_
   match classify page with
-  | C #(Page_header.Bplustree_internal_header, pg) -> Either.First (Obj.magic pg)
-  | C #(Page_header.Bplustree_leaf_header, pg) -> Either.Second (Obj.magic pg)
+  | C #(Page_header.Bplustree_internal_header, pg) -> Either.First (unsafe_cast_page pg : Page_header.bplustree_internal t)
+  | C #(Page_header.Bplustree_leaf_header, pg) -> Either.Second (unsafe_cast_page pg : Page_header.bplustree_leaf t)
   | _ -> assert false
 
 let classify_as_bplustree_leaf_exn page @ local = exclave_
   match classify page with
-  | C #(Page_header.Bplustree_leaf_header, pg) -> Obj.magic pg
+  | C #(Page_header.Bplustree_leaf_header, pg) -> (unsafe_cast_page pg : Page_header.bplustree_leaf t)
   | _ -> assert false
 
 let classify_as_bplustree_internal_exn page @ local = exclave_
   match classify page with
-  | C #(Page_header.Bplustree_internal_header, pg) -> Obj.magic pg
+  | C #(Page_header.Bplustree_internal_header, pg) -> (unsafe_cast_page pg : Page_header.bplustree_internal t)
   | _ -> assert false
 
 let classify_as_free_page_exn page @ local = exclave_
   match classify page with
-  | C #(Page_header.Free_page_header, pg) -> Obj.magic pg
+  | C #(Page_header.Free_page_header, pg) -> (unsafe_cast_page pg : Page_header.free_page t)
   | _ -> assert false
 
 let overwrite_as (type a) (header : a Page_header.t) ((P pg) @ local) : a t @ local = exclave_
