@@ -307,7 +307,7 @@ module Leaf = struct
   let lookup_key (t @ local) k =
     match find_key_pos t k with
     | `Not_found _ -> Null
-    | `Found_exact (~idx:_,pageno) -> This pageno
+    | `Found_exact (~idx,pageno) -> This (idx,pageno)
     | `Found_other _ -> Null
 
   (* Insert key-value pair into leaf at given position, assumes not full and key doesn't exist *)
@@ -400,12 +400,12 @@ let create cache allocator =
   {root = root_pageno;cache;allocator}
 
 type cursor = {
-  mutable pos : (Pageno.t * int) option;  (* (leaf_pageno, idx) or None if past end *)
+  mutable pageno : Pageno.t;
+  mutable idx : int Or_null.t;
   mutable key : int;
   t : t;
 }
 
-(* Find leaf page containing key *)
 let find_leaf t key =
   let rec loop pageno =
     Page_cache.with_page t.cache pageno (fun page ->
@@ -418,61 +418,79 @@ let find_leaf t key =
 let seek cursor key =
   let leaf_pageno = find_leaf cursor.t key in
   cursor.key <- key;
-  cursor.pos <- Some (leaf_pageno, 0)  (* idx is a placeholder, get/set will find correct position *)
-
-let advance_to_right_sibling cursor leaf_pageno =
   Page_cache.with_page cursor.t.cache leaf_pageno (fun page ->
     let leaf = Page.classify_as_bplustree_leaf_exn page in
-    let #(~left:_, ~right) = Leaf.get_sibs leaf in
-    match%optional.Or_null right with
-    | None -> cursor.pos <- None
-    | Some right_pageno ->
-        Page_cache.with_page cursor.t.cache right_pageno (fun right_page ->
-          let right_leaf = Page.classify_as_bplustree_leaf_exn right_page in
-          if Leaf.num_keys right_leaf > 0 then begin
-            let (k, _) = Leaf.get_entry right_leaf 0 in
-            cursor.pos <- Some (right_pageno, 0);
-            cursor.key <- k
-          end else
-            cursor.pos <- None))
+    cursor.pageno <- leaf_pageno;
+    match Leaf.find_key_pos leaf key with
+    | `Found_exact (~idx, _) ->
+        cursor.idx <- This idx
+    | `Found_other _ | `Not_found _ -> ())
 
-let next cursor =
-  let next_key = cursor.key + 1 in
-  let leaf_pageno = match cursor.pos with
-    | Some (pageno, _) -> pageno
-    | None -> find_leaf cursor.t next_key
+
+let shift_to_sibling dir cursor leaf =
+  let #(~left, ~right) = Leaf.get_sibs leaf in
+  let sib =
+    match dir with
+    | `Left -> left
+    | `Right -> right
   in
+  match%optional.Or_null sib with
+  | None -> cursor.idx <- Null
+  | Some sib_pageno ->
+      Page_cache.with_page cursor.t.cache sib_pageno (fun sib_page ->
+        let sib_leaf = Page.classify_as_bplustree_leaf_exn sib_page in
+        let num_keys = Leaf.num_keys sib_leaf in
+        assert (num_keys > 0);
+        let sib_leaf_idx =
+          match dir with
+          | `Left -> num_keys - 1
+          | `Right -> 0
+        in
+        let (k, _) = Leaf.get_entry sib_leaf sib_leaf_idx in
+        cursor.pageno <- sib_pageno;
+        cursor.idx <- This sib_leaf_idx;
+        cursor.key <- k)
+
+let step cursor dir =
+  let incr = 
+    match dir with
+    | `Left -> -1
+    | `Right -> 1
+  in
+  let next_key = cursor.key + incr in
+  let leaf_pageno = cursor.pageno in
   Page_cache.with_page cursor.t.cache leaf_pageno (fun page ->
     let leaf = Page.classify_as_bplustree_leaf_exn page in
     match Leaf.find_key_pos leaf next_key with
     | `Found_exact (~idx, _) ->
-        cursor.pos <- Some (leaf_pageno, idx);
+        cursor.pageno <- leaf_pageno;
+        cursor.idx <- This idx;
         cursor.key <- next_key
-    | `Found_other (~idx, ~key, _) ->
-        cursor.pos <- Some (leaf_pageno, idx);
-        cursor.key <- key
+    | `Found_other _ ->
+        cursor.pageno <- leaf_pageno;
+        cursor.idx <- Null;
+        cursor.key <- next_key 
     | `Not_found _ ->
-        advance_to_right_sibling cursor leaf_pageno)
+        shift_to_sibling dir cursor leaf [@nontail])
 
+let next cursor = step cursor `Right
+let prev cursor = step cursor `Left
+  
 let create_cursor t key =
-  let cursor = { pos = None; key; t } in
+  let cursor = { pageno = Pageno.of_int_exn Int.max_value ; idx = Null; key; t } in
   seek cursor key;
   cursor
 
 let get cursor =
-  match cursor.pos with
+  match%optional.Or_null cursor.idx with
   | None -> Null
-  | Some (leaf_pageno, _) ->
-      Page_cache.with_page cursor.t.cache leaf_pageno (fun page ->
+  | Some idx ->
+      Page_cache.with_page cursor.t.cache cursor.pageno (fun page ->
         let leaf = Page.classify_as_bplustree_leaf_exn page in
-        Leaf.lookup_key leaf cursor.key [@nontail])
-
+        let (_,pageno) = Leaf.get_entry leaf idx in
+        This pageno)
+      
 let set cursor value =
-  let (leaf_pageno, _idx) = match cursor.pos with
-    | Some pos -> pos
-    | None -> failwith "set: cursor past end of tree"
-  in
-  let key = cursor.key in
   let t = cursor.t in
   let { cache; allocator; _ } = t in
   let rec propagate_split current_pageno split_key split_right =
@@ -527,18 +545,26 @@ let set cursor value =
               | SplitResult.Split #(new_key, new_right) ->
                   propagate_split parent_pageno new_key new_right)))
   in
+  let key = cursor.key in
+  let leaf_pageno = cursor.pageno in
   let split_result =
     Page_cache.with_page cache leaf_pageno (fun page ->
       let leaf = Page.classify_as_bplustree_leaf_exn page in
       Leaf.insert leaf ~key ~value cache allocator [@nontail])
   in
+  let update_cursor_pos new_leaf_pageno =
+    Page_cache.with_page cache new_leaf_pageno (fun page ->
+      let leaf = Page.classify_as_bplustree_leaf_exn page in
+      match%optional.Or_null Leaf.lookup_key leaf key with
+      | Some pos -> cursor.idx <- This (fst pos)
+      | None -> cursor.idx <- Null)
+  in
   match split_result with
-  | SplitResult.NoSplit -> ()
+  | SplitResult.NoSplit -> update_cursor_pos leaf_pageno
   | SplitResult.Split #(pivot, new_right_pageno) ->
-      (* After split, the cursor's key may now be in the new leaf! *)
       let new_leaf = if key >= pivot then new_right_pageno else leaf_pageno in
-      cursor.pos <- Some (new_leaf, 0);
-      propagate_split leaf_pageno pivot new_right_pageno
+      propagate_split leaf_pageno pivot new_right_pageno;
+      update_cursor_pos new_leaf
 
 module Valid = struct
   let check t =

@@ -11,6 +11,7 @@ val get : cursor -> Pageno.t Or_null.t
 val set : cursor -> Pageno.t -> unit
 val seek : cursor -> int -> unit
 val next : cursor -> unit
+val prev : cursor -> unit
 
 module Valid : sig
   val check : t -> unit
