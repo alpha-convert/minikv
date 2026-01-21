@@ -94,7 +94,6 @@ let put t k v =
     | Some pageno -> pageno
     | None ->
       let pageno = Page_allocator.allocate_page t.allocator in
-      Bplustree.set cursor pageno;
       flush_metadata_if_new_root_or_freelist t;
       pageno
   in
