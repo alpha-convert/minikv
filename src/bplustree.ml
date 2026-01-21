@@ -369,7 +369,7 @@ let create cache allocator =
   let leaf_pageno = Page_allocator.allocate_page allocator in
   let root_pageno = Page_allocator.allocate_page allocator in
   Page_cache.with_page cache leaf_pageno (fun page ->
-    let (_ : Leaf.t) = Leaf.init page ~parent:(This root_pageno) ~left:Null ~right:Null in ()
+    let _ : Leaf.t = Leaf.init page ~parent:(This root_pageno) ~left:Null ~right:Null in ()
   );
   Page_cache.with_page cache root_pageno (fun page ->
     let page = Internal.init page ~parent:Null in
@@ -469,3 +469,151 @@ let set cursor value =
       (* After split, the cursor's key may now be in a the new leaf! *)
       if key >= pivot then cursor.leaf_pageno <- right_pageno;
       propagate_split leaf_pageno pivot right_pageno
+
+module Valid = struct
+  let check t =
+    let cache = t.cache in
+
+    (* Check that keys are sorted in a leaf *)
+    let check_leaf_sorted leaf pageno =
+      let n = Leaf.num_keys leaf in
+      for i = 0 to n - 2 do
+        let (k1, _) = Leaf.get_entry leaf i in
+        let (k2, _) = Leaf.get_entry leaf (i + 1) in
+        if k1 >= k2 then
+          failwith (sprintf "Keys not sorted in leaf page %d: key[%d]=%d >= key[%d]=%d"
+            (Pageno.to_int pageno) i k1 (i + 1) k2)
+      done
+    in
+
+    (* Check that keys are sorted in an internal node *)
+    let check_internal_sorted internal pageno =
+      let n = Internal.num_keys internal in
+      for i = 0 to n - 2 do
+        let k1 = Internal.get_key internal i in
+        let k2 = Internal.get_key internal (i + 1) in
+        if k1 >= k2 then
+          failwith (sprintf "Keys not sorted in internal page %d: key[%d]=%d >= key[%d]=%d"
+            (Pageno.to_int pageno) i k1 (i + 1) k2)
+      done
+    in
+
+    (* Recursively check the tree, returning (min_key, max_key, depth) for the subtree *)
+    let rec check_node pageno ~expected_parent ~min_bound ~max_bound =
+      Page_cache.with_page cache pageno (fun page ->
+        match Page.classify_as_bplustree_exn page with
+        | Either.Second leaf ->
+            (* Check parent pointer *)
+            let actual_parent = get_parent leaf in
+            (match expected_parent, actual_parent with
+            | Some exp, This act when not (Pageno.equal exp act) ->
+                failwith (sprintf "Parent mismatch for leaf %d: expected %d, got %d"
+                  (Pageno.to_int pageno) (Pageno.to_int exp) (Pageno.to_int act))
+            | Some _, Null ->
+                failwith (sprintf "Parent mismatch for leaf %d: expected parent, got null"
+                  (Pageno.to_int pageno))
+            | None, This act ->
+                failwith (sprintf "Parent mismatch for leaf %d: expected null (root), got %d"
+                  (Pageno.to_int pageno) (Pageno.to_int act))
+            | _ -> ());
+
+            check_leaf_sorted leaf pageno;
+
+            let n = Leaf.num_keys leaf in
+            (* Check key bounds *)
+            for i = 0 to n - 1 do
+              let (k, _) = Leaf.get_entry leaf i in
+              (match min_bound with
+              | Some min when k < min ->
+                  failwith (sprintf "Key %d in leaf %d is below min bound %d"
+                    k (Pageno.to_int pageno) min)
+              | _ -> ());
+              (match max_bound with
+              | Some max when k >= max ->
+                  failwith (sprintf "Key %d in leaf %d is at or above max bound %d"
+                    k (Pageno.to_int pageno) max)
+              | _ -> ())
+            done;
+
+            0 (* depth of leaf is 0 *)
+
+        | Either.First internal ->
+            (* Check parent pointer *)
+            let actual_parent = get_parent internal in
+            (match expected_parent, actual_parent with
+            | Some exp, This act when not (Pageno.equal exp act) ->
+                failwith (sprintf "Parent mismatch for internal %d: expected %d, got %d"
+                  (Pageno.to_int pageno) (Pageno.to_int exp) (Pageno.to_int act))
+            | Some _, Null ->
+                failwith (sprintf "Parent mismatch for internal %d: expected parent, got null"
+                  (Pageno.to_int pageno))
+            | None, This act ->
+                failwith (sprintf "Parent mismatch for internal %d: expected null (root), got %d"
+                  (Pageno.to_int pageno) (Pageno.to_int act))
+            | _ -> ());
+
+            check_internal_sorted internal pageno;
+
+            let n = Internal.num_keys internal in
+
+            (* Check all children recursively *)
+            let first_child = Internal.get_child internal 0 in
+            let child_min = min_bound in
+            let child_max = if n > 0 then Some (Internal.get_key internal 0) else max_bound in
+            let first_depth = check_node first_child ~expected_parent:(Some pageno) ~min_bound:child_min ~max_bound:child_max in
+
+            for i = 0 to n - 1 do
+              let child = Internal.get_child internal (i + 1) in
+              let child_min = Some (Internal.get_key internal i) in
+              let child_max = if i + 1 < n then Some (Internal.get_key internal (i + 1)) else max_bound in
+              let depth = check_node child ~expected_parent:(Some pageno) ~min_bound:child_min ~max_bound:child_max in
+              if depth <> first_depth then
+                failwith (sprintf "Inconsistent depth in internal %d: child 0 has depth %d, child %d has depth %d"
+                  (Pageno.to_int pageno) first_depth (i + 1) depth)
+            done;
+
+            first_depth + 1)
+    in
+
+    (* Check sibling pointers by traversing leaves left-to-right *)
+    let check_sibling_pointers () =
+      (* Find leftmost leaf *)
+      let rec find_leftmost pageno =
+        Page_cache.with_page cache pageno (fun page ->
+          match Page.classify_as_bplustree_exn page with
+          | Either.Second _ -> pageno
+          | Either.First internal -> find_leftmost (Internal.get_child internal 0))
+      in
+      let leftmost = find_leftmost t.root in
+
+      (* Traverse all leaves checking sibling pointers *)
+      let rec traverse prev_pageno current_pageno =
+        Page_cache.with_page cache current_pageno (fun page ->
+          let leaf = Page.classify_as_bplustree_leaf_exn page in
+          let #(~left, ~right) = Leaf.get_sibs leaf in
+
+          (* Check left sibling *)
+          (match prev_pageno, left with
+          | None, Null -> ()
+          | None, This l ->
+              failwith (sprintf "Leftmost leaf %d has non-null left sibling %d"
+                (Pageno.to_int current_pageno) (Pageno.to_int l))
+          | Some prev, Null ->
+              failwith (sprintf "Leaf %d has null left sibling, expected %d"
+                (Pageno.to_int current_pageno) (Pageno.to_int prev))
+          | Some prev, This l when not (Pageno.equal prev l) ->
+              failwith (sprintf "Leaf %d has wrong left sibling: expected %d, got %d"
+                (Pageno.to_int current_pageno) (Pageno.to_int prev) (Pageno.to_int l))
+          | Some _, This _ -> ());
+
+          (* Continue to right sibling *)
+          match%optional.Or_null right with
+          | None -> ()
+          | Some next -> traverse (Some current_pageno) next)
+      in
+      traverse None leftmost
+    in
+
+    let _ = check_node t.root ~expected_parent:None ~min_bound:None ~max_bound:None in
+    check_sibling_pointers ()
+end

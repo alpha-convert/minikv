@@ -8,9 +8,9 @@ module T : sig
   end = struct
     type t = (int * Pageno.t) list [@@deriving sexp, quickcheck]
     let quickcheck_generator =
-      Generator.list_with_length ~length:500000
+      Generator.list_with_length ~length:5000000
       (Generator.both
-         (Generator.int_uniform_inclusive 1 10000)
+         (Generator.int_uniform_inclusive 1 100000)
          (Generator.map ~f:Pageno.of_int_exn (Generator.int_uniform_inclusive 1 1000000)))
   end
 
@@ -41,6 +41,8 @@ let test_differential_insert_lookup () =
             failwith (sprintf "Key %d: B+ tree has value %d but table has %d"
                         key (Pageno.to_int found_value) (Pageno.to_int data))
     );
+
+    Bplustree.Valid.check bptree;
 
     ignore (close fd);
     ()

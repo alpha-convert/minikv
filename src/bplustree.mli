@@ -10,3 +10,7 @@ val create_cursor : t -> int -> cursor
 val get : cursor -> Pageno.t Or_null.t
 val set : cursor -> Pageno.t -> unit
 val seek : cursor -> int -> unit
+
+module Valid : sig
+  val check : t -> unit
+end
